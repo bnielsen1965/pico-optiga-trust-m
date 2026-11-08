@@ -1,0 +1,21 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": { "major": 3, "minor": 22, "patch": 0 },
+  "configurePresets": [
+    {
+      "name": "pico2",
+      "displayName": "Pico II (RP2350)",
+      "description": "Build for the Raspberry Pi Pico II (RP2350). Provide the Pico SDK via PICO_SDK_PATH, a checkout in third_party/pico-sdk, or let CMake fetch it.",
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "pico2",
+      "configurePreset": "pico2"
+    }
+  ]
+}

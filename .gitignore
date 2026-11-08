@@ -1,0 +1,25 @@
+# Build trees
+build/
+build-*/
+cmake-build-*/
+
+# CMake
+CMakeCache.txt
+CMakeUserPresets.json
+CMakeFiles/
+cmake_install.cmake
+install_manifest.txt
+
+# Compiled / linked products
+*.o
+*.a
+*.elf
+*.hex
+*.map
+*.uf2
+*.bin
+
+# Tooling
+.vscode/
+.idea/
+*.swp
