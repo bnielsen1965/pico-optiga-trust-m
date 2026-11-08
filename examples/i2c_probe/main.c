@@ -11,7 +11,15 @@
  *   1. write 1 byte  = register address
  *   2. read N bytes  = register data
  *
+ * Protocol constraints (datasheet Table 24 / Appendix A.2.1):
+ *   - GUARD_TIME: >= 50 µs between consecutive accesses to the chip,
+ *     measured at the master from STOP to the next START; the chip NAKs
+ *     the read address if the read follows the register write too soon.
+ *   - The chip does not ACK its address while busy (or in idle state);
+ *     the host must retry, up to ~100 ms in the extreme case.
+ *
  * Bus:  I2C0, SDA = GP20, SCL = GP21, 100 kHz
+ * RST:  GP22 (active low) — warm reset before probing (datasheet 5.1.4.2)
  * Chip: OPTIGA Trust M @ 0x30 (7-bit), I2C-ready 15 ms after power-on
  * Stdio: UART0 (CP210x bridge), 115200 8N1
  *
@@ -26,6 +34,7 @@
 #define PROBE_I2C       (i2c0)
 #define PROBE_SDA_PIN   20u
 #define PROBE_SCL_PIN   21u
+#define PROBE_RST_PIN   22u /* Trust M RST, active low */
 #define PROBE_FREQ_HZ   100000u
 #define TRUSTM_ADDR     0x30u
 
@@ -52,6 +61,38 @@
 #define REG_READ_RETRIES 5u
 #define REG_READ_RETRY_DELAY_MS 50u
 
+/* Datasheet Table 24: GUARD_TIME — minimum time that must elapse at the
+ * master between two consecutive accesses to the same device (measured from
+ * the STOP condition until the next START). The reference IFX I2C stack
+ * enforces exactly 50 µs (PL_GUARD_TIME_INTERVAL_US); we use 100 µs for
+ * margin. Without it the chip NAKs the read address. */
+#define TRUSTM_GUARD_TIME_US 100u
+
+/* Warm-reset timing (datasheet 5.1.4.2, Table 14):
+ *   - RST must be low for t1 = 10 µs to be detected, and must be
+ *     released within 2.5 ms of the falling edge -> pulse 1 ms
+ *   - first I2C transmission only >= tSTARTUP after RST rises:
+ *     15 ms (20 ms if an NVM program was pending) -> settle 25 ms */
+#define TRUSTM_RST_PULSE_MS  1u
+#define TRUSTM_RST_SETTLE_MS 25u
+
+/* Settle before the first probe. tSTARTUP (15-20 ms) is already covered
+ * by the reset settle; this is margin. Keep this SHORT: long silence
+ * after reset lets the chip settle into its idle state, in which it
+ * will not acknowledge its address — the scan's retry loop below is
+ * what wakes it. */
+#define SCAN_SETTLE_MS 50u
+
+/* The chip does not acknowledge its address while busy or in idle state
+ * (datasheet A.2.1): "the host must retry or repeat the transaction
+ * until it is successful or timed out for 100 milliseconds (extreme
+ * case)". Empirically its ACK-ready window opens a few ms after bus
+ * activity and closes again after ~20 ms of silence, so the retry
+ * cadence must be tight (5 ms) — one re-probe after a long pause walks
+ * right out of the window. */
+#define SCAN_RETRY_INTERVAL_MS 5u
+#define SCAN_RETRY_BUDGET_MS   100u
+
 static const char *mode_name(uint8_t mode)
 {
     switch (mode) {
@@ -71,11 +112,21 @@ static const char *mode_name(uint8_t mode)
 static int reg_read(uint8_t reg, uint8_t *buf, size_t len)
 {
     for (uint32_t attempt = 1; attempt <= REG_READ_RETRIES; attempt++) {
-        if (i2c_write_blocking(PROBE_I2C, TRUSTM_ADDR, &reg, 1, false) != 0) {
+        /* Guard time since the previous access to the chip (covers the gap
+         * between consecutive reg_read calls and the scan -> first read). */
+        sleep_us(TRUSTM_GUARD_TIME_US);
+        /* Pico SDK: i2c_write_blocking / i2c_read_blocking return the number
+         * of bytes transferred on success, and a negative value on failure
+         * (address NAK / timeout). A return of 0 means the address was
+         * acknowledged but the first data byte was NAKed. */
+        if (i2c_write_blocking(PROBE_I2C, TRUSTM_ADDR, &reg, 1, false) < 0) {
             sleep_ms(REG_READ_RETRY_DELAY_MS);
             continue;
         }
-        if (i2c_read_blocking(PROBE_I2C, TRUSTM_ADDR, buf, len, false) != 0) {
+        /* The chip needs GUARD_TIME after the register-address write before
+         * it will service the read; back-to-back write+read gets NAKed. */
+        sleep_us(TRUSTM_GUARD_TIME_US);
+        if (i2c_read_blocking(PROBE_I2C, TRUSTM_ADDR, buf, len, false) < 0) {
             sleep_ms(REG_READ_RETRY_DELAY_MS);
             continue;
         }
@@ -104,26 +155,95 @@ static void print_hex(const char *label, const uint8_t *buf, size_t len)
     printf("\n");
 }
 
+/*
+ * Warm-reset the chip (datasheet 5.1.4.2): VCC stays powered, RST is
+ * pulsed low. This re-initializes the I2C interface and clears any busy
+ * state left by a previous run, so every probe session starts from a
+ * known-good state.
+ *
+ * Requirement: SDA and SCL must be high (bus idle) while RST is
+ * asserted — call this before i2c_init(), with the I2C pins as plain
+ * pulled-up inputs.
+ */
+/*
+ * Bring up the RST pin safely, as early as possible in boot:
+ *   1. the RP2350 GPIO OUT register defaults to 0 after reset, so the
+ *      output value must be set HIGH *before* enabling the output
+ *      driver — otherwise gpio_set_dir(OUT) emits a short low spike
+ *      on RST;
+ *   2. holding RST deterministically high from the start of boot means
+ *      the chip never sees a floating reset line while the Pico starts
+ *      up (the module side may carry no pull-up).
+ */
+static void rst_pin_bringup(void)
+{
+    gpio_init(PROBE_RST_PIN);
+    gpio_put(PROBE_RST_PIN, 1);       /* output value high first... */
+    gpio_set_dir(PROBE_RST_PIN, GPIO_OUT); /* ...then enable driver: no low spike */
+}
+
+static void trustm_reset(void)
+{
+    /* RST is already held high by rst_pin_bringup(). */
+    sleep_ms(1);                /* let the line settle high */
+
+    gpio_put(PROBE_RST_PIN, 0); /* assert reset */
+    sleep_ms(TRUSTM_RST_PULSE_MS);
+    gpio_put(PROBE_RST_PIN, 1); /* deassert (rising edge starts tSTARTUP) */
+
+    sleep_ms(TRUSTM_RST_SETTLE_MS);
+    printf("Chip warm-reset (RST GP%d low %u ms, tSTARTUP settle %u ms)\n",
+           PROBE_RST_PIN, TRUSTM_RST_PULSE_MS, TRUSTM_RST_SETTLE_MS);
+}
+
 static void bus_scan(void)
 {
     printf("I2C bus scan @ %u Hz:\n", PROBE_FREQ_HZ);
     int found = 0;
-    for (uint8_t addr = 1; addr < 127; addr++) {
+    uint32_t waited_ms = 0;
+
+    /* Datasheet A.2.1: repeat the transaction until it succeeds, up to
+     * a 100 ms budget. The tight cadence keeps the chip's ACK-ready
+     * window from closing between attempts. */
+    for (;;) {
         uint8_t dummy = 0;
-        if (i2c_write_blocking(PROBE_I2C, addr, &dummy, 1, false) == 0) {
-            printf("  device at 0x%02X%s\n", addr,
-                   addr == TRUSTM_ADDR ? "  (Trust M)" : "");
-            found++;
+        /* Success returns 1 (bytes written); 0 means the address was
+         * acknowledged but the dummy data byte was NAKed — in either
+         * case something on the bus answered the address, so count it
+         * as present. Only a negative return (address NAK / timeout)
+         * means no device. */
+        if (i2c_write_blocking(PROBE_I2C, TRUSTM_ADDR, &dummy, 1, false) >= 0) {
+            printf("  device at 0x%02X  (Trust M) — answered after %u ms\n",
+                   TRUSTM_ADDR, (unsigned)waited_ms);
+            found = 1;
+            break;
         }
+        if (waited_ms + SCAN_RETRY_INTERVAL_MS > SCAN_RETRY_BUDGET_MS) {
+            break;
+        }
+        sleep_ms(SCAN_RETRY_INTERVAL_MS);
+        waited_ms += SCAN_RETRY_INTERVAL_MS;
     }
+
     if (!found) {
-        printf("  (no devices answered)\n");
+        printf("  (no device answered within %u ms)\n", SCAN_RETRY_BUDGET_MS);
     }
 }
 
 int main(void)
 {
+    /* Hold RST high before *anything* else, so the chip never sees a
+     * floating or glitchy reset line during Pico boot. */
+    rst_pin_bringup();
+
     stdio_init_all(); /* pico-sdk 2.x replacement for pico_sdk_init() */
+
+    /* Warm-reset the chip before touching the bus. The datasheet requires
+     * SDA/SCL high while RST is asserted, so the I2C pins stay plain
+     * pulled-up inputs until after the reset; i2c_init() comes later. */
+    gpio_pull_up(PROBE_SDA_PIN);
+    gpio_pull_up(PROBE_SCL_PIN);
+    trustm_reset();
 
     i2c_init(PROBE_I2C, PROBE_FREQ_HZ);
     gpio_set_function(PROBE_SDA_PIN, GPIO_FUNC_I2C);
@@ -138,9 +258,9 @@ int main(void)
            PROBE_SDA_PIN, PROBE_SCL_PIN, PROBE_FREQ_HZ / 1000);
     printf("Expected chip address: 0x%02X\n\n", TRUSTM_ADDR);
 
-    /* Chip is I2C-ready 15 ms after power-on (datasheet Table 13); the Pico
-     * boots much later than that, but settle anyway. */
-    sleep_ms(50);
+    /* The warm reset already cleared any busy state and guaranteed
+     * tSTARTUP; this is extra margin before the first probe. */
+    sleep_ms(SCAN_SETTLE_MS);
 
     bus_scan();
     printf("\n");

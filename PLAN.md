@@ -58,7 +58,26 @@ source:
 configures and compiles the `optiga_trust_m` static library for the RP2350
 with no application code present.
 
-## Phase 1 — Raw I2C probe (no Infineon library)
+## Facts established in Phase 1 (empirical, bench-verified)
+
+Hard-won while debugging the raw probe against the bench unit
+(scope-verified). **The Phase 2 PAL port must honor all of these:**
+
+| Fact | Value | Source |
+|---|---|---|
+| Pico SDK `i2c_write_blocking` / `i2c_read_blocking` return | **number of bytes transferred** on success (not 0); `0` = address ACKed but data NAKed; negative = address NAK / timeout | `hardware/i2c.h`, `rp2_common/hardware_i2c/i2c.c` |
+| GUARD_TIME between consecutive chip accesses | **≥ 50 µs** (STOP to next START); reference stack enforces exactly 50 µs (`PL_GUARD_TIME_INTERVAL_US`). Without it the chip NAKs the read address | Datasheet Table 24; `ifx_i2c_config.h` |
+| Address ACK while busy/idle | chip does **not** acknowledge its address; host must "retry or repeat the transaction until it is successful", up to a **100 ms** budget | Datasheet A.2.1 |
+| Empirical wake behavior | after reset + settle: first probe NAKs, a probe **5 ms later ACKs**; the ACK-ready window closes after ~20 ms of bus silence → scan with a tight **5 ms retry cadence**, never one shot + long pause | bench, scope |
+| Warm reset (RST, active low) | low pulse **10 µs … 2.5 ms** (we use 1 ms); first transmission ≥ **tSTARTUP = 15 ms** (20 ms if NVM pending) after the rising edge; SDA/SCL high during the pulse; VCC stays powered | Datasheet 5.1.4.2, Table 14 |
+| RST wiring | **GP22 → module RST** (wired). Bring the pin up as output-high *before* enabling the driver — the RP2350 GPIO OUT register defaults to 0, so a naive `gpio_set_dir(OUT)` emits a low spike on RST | bench |
+| RP2350 I2C0 pin options | SDA 0/4/8/12/16/**20**/24/28, SCL 1/5/9/13/17/**21**/25/29 — GP20/21 is a valid I2C0 mapping (unlike the RP2040) | `pico-sdk/src/rp2350/rp2350a_interface_pins.json` |
+
+The IFX stack's own busy polling (`PL_POLLING_INVERVAL_US` = 1 ms) is
+consistent with the observed 5 ms wake window, so the Phase 3 handshake
+should inherit the behavior for free once the PAL is in place.
+
+## Phase 1 — Raw I2C probe (no Infineon library) — **done**
 
 The smallest possible experiment: bypass the whole protocol stack and just ask
 the chip, over plain I2C, "are you there and what are your settings?".
@@ -83,6 +102,12 @@ here as NAKs or as a 0x107 handshake in Phase 3.
 
 **Exit criteria:** probe prints a sane I2C_STATE / MAX_SCL_FREQU from address
 0x30 on the bench unit.
+
+**Outcome (bench-verified):** the probe now detects 0x30 on every reset
+(warm reset on GP22 at boot, scan with 5 ms retry cadence — the chip
+answers on the second probe) and reads I2C_STATE / MAX_SCL_FREQU /
+I2C_MODE. Every failure mode encountered is documented in the empirical
+facts table above.
 
 ## Phase 2 — Pico PAL port
 
@@ -221,9 +246,11 @@ In rough order of likely value:
    - *Initialized?* No host-side provisioning is needed for basic use; the
      only "init" is the 15 ms power-up settle and the IFX I2C open
      negotiation, both handled in software.
-2. ~~**VDD / RESET wiring**~~ — **resolved**: VDD is tied to the Pico's 3.3 V,
-   RESET is not connected. PAL uses `NULL` for both; we live on power-on
-   reset. Debug stdio goes over UART0 (CP210x bridge), not USB.
+2. ~~**VDD / RESET wiring**~~ — **resolved**: VDD is tied to the Pico's 3.3 V
+   (no hibernate MOSFET — warm resets only). **RESET is wired to GP22** and
+   the firmware pulses it at boot (see Phase 1 facts) — this turned out to be
+   essential for reliable operation. Debug stdio goes over UART0 (CP210x
+   bridge), not USB.
 3. **Pull-ups** — confirm 4.7 kΩ (or module-integrated) pull-ups to 3.3 V on
    GP20/GP21; needed for reliable 100 kHz, more important at 400 kHz.
 4. **I2C speed** — start at 100 kHz; the library auto-negotiates to 400 kHz
