@@ -221,8 +221,9 @@ In rough order of likely value:
    - *Initialized?* No host-side provisioning is needed for basic use; the
      only "init" is the 15 ms power-up settle and the IFX I2C open
      negotiation, both handled in software.
-2. **VDD / RESET wiring** — are the chip's power and reset lines controllable
-   from Pico GPIOs? If not, PAL uses `NULL` and we live on power-on reset.
+2. ~~**VDD / RESET wiring**~~ — **resolved**: VDD is tied to the Pico's 3.3 V,
+   RESET is not connected. PAL uses `NULL` for both; we live on power-on
+   reset. Debug stdio goes over UART0 (CP210x bridge), not USB.
 3. **Pull-ups** — confirm 4.7 kΩ (or module-integrated) pull-ups to 3.3 V on
    GP20/GP21; needed for reliable 100 kHz, more important at 400 kHz.
 4. **I2C speed** — start at 100 kHz; the library auto-negotiates to 400 kHz

@@ -17,22 +17,23 @@ objects, and (later) offload cryptography to the secure element.
 | Bus | I2C0: **SDA = GP20**, **SCL = GP21** |
 | I2C address | **0x30** (7-bit, factory default — datasheet Table 20/21) |
 | I2C speed | 100 kHz standard / 400 kHz fast mode supported (chip also does FM+ up to 1 MHz); the Infineon library starts at 100 kHz and auto-negotiates |
-| Power | Trust M I2C supply is 1.62–5.5 V, so the Pico's 3.3 V IO is fine |
-| Power-on | I2C is ready **15 ms** after power-on (datasheet Table 13) |
+| Power | Trust M **VDD tied to the Pico's 3.3 V** (supply range 1.62–5.5 V); **RESET not connected** |
+| Power-on | I2C is ready **15 ms** after power-on (datasheet Table 13); no software reset path, so we rely on the power-on state |
+| Debug serial | **CP210x USB-UART bridge on the Pico's UART0** — all stdio/debug output goes over UART (115200 8N1), not the Pico's native USB |
 | Datasheet | [`infineon-optiga-trust-m-sls32aia-datasheet-en.pdf`](infineon-optiga-trust-m-sls32aia-datasheet-en.pdf) (in this repo) |
 
-Open hardware questions (to confirm on the bench):
+Consequences for the design:
 
-- Are the Trust M **VDD** and **RESET** pins wired to Pico GPIOs? The Infineon
-  library can do cold/warm resets through them, but they are optional — if
-  they aren't connected the PAL is configured with `NULL` and we rely on the
-  power-on state.
-- Are there **pull-up resistors** on the I2C bus (the Trust M breakout module
-  has them on board; a bare chip needs external ~4.7 kΩ pull-ups to 3.3 V)?
+- PAL `optiga_vdd_0` / `optiga_reset_0` are configured as `NULL` (Phase 2) —
+  the Infineon library then skips cold/warm resets.
+- Examples are built with `pico_enable_stdio_uart(1)` /
+  `pico_enable_stdio_usb(0)`.
+- Pull-ups: the Trust M module carries them on board; the Phase 1 probe also
+  enables the Pico's weak internal pull-ups as a safety net.
 - **Chip state**: is this chip factory-fresh, or has a *shielded connection*
-  (pairing) been applied to it? A pre-paired chip will reject plain
-  (unprotected) communication with a `0x107` handshake error and would need
-  Infineon's tooling to unlock it. See PLAN.md, Phase 1.
+  (pairing) been applied to it? A pre-paired chip answers the raw I2C probe
+  fine but rejects the library handshake with a `0x107` error and would need
+  Infineon's tooling to unlock it. Phase 3 settles this.
 
 ## Software stack
 
@@ -92,10 +93,23 @@ cmake --build build/pico2 -j
 pico_build/build/pico2/<example>_flash  # pico-sdk convenience script
 ```
 
+## Running the Phase 1 probe
+
+1. Build: `cmake --build build/pico2-local -j`
+2. Copy `build/pico2-local/i2c_probe.uf2` to the Pico's `RPI-RP2` drive
+   (hold BOOTSEL, plug in USB, release).
+3. Open the CP210x serial port at **115200 8N1** (e.g.
+   `minicom -D /dev/ttyUSB0 -b 115200` or any serial terminal).
+4. Reset the Pico (power cycle is a good reset for the Trust M too).
+
+Expected output on a healthy, unpaired chip: a bus scan showing `0x30
+(Trust M)`, then `I2C_STATE = 08 80 00 00`, `MAX_SCL_FREQU = 000001F4`
+(500 kHz), `I2C_MODE = 00 03` (SM & FM), and a `PASS` line.
+
 ## Status
 
 - [x] Phase 0 — CMake project assembled, README + plan written
-- [ ] Phase 1 — raw I2C probe of the chip (no Infineon library yet)
+- [x] Phase 1 — raw I2C probe (`examples/i2c_probe`) — **code complete, awaiting bench run**
 - [ ] Phase 2 — Pico PAL port
 - [ ] Phase 3 — first library-level communication (chip version / serial)
 - [ ] Phase 4 — `pico_optiga` public API

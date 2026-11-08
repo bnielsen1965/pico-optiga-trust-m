@@ -17,6 +17,12 @@
 cmake_minimum_required(VERSION 3.22)
 
 # ---------------------------------------------------------------------------
+# Target board: Raspberry Pi Pico II (RP2350) by default.
+# Must be set before the SDK is imported (the SDK reads it at init time).
+# ---------------------------------------------------------------------------
+set(PICO_BOARD "pico2" CACHE STRING "Pico SDK board name (pico2 = Raspberry Pi Pico II / RP2350)")
+
+# ---------------------------------------------------------------------------
 # Raspberry Pi Pico SDK
 #
 # The SDK must be located and imported *before* project(): its toolchain
@@ -68,10 +74,6 @@ option(PICO_OPTIGA_SHIELDED_CONNECTION
        "Enable the Infineon shielded (encrypted) I2C connection. Requires Mbed TLS 4.x plus a crypto PAL (pal_crypt_*). Off by default: plain IFX I2C is sufficient for basic use."
        OFF)
 
-# ---------------------------------------------------------------------------
-# Target board: Raspberry Pi Pico II (RP2350) by default
-# ---------------------------------------------------------------------------
-set(PICO_BOARD "pico2" CACHE STRING "Pico SDK board name (pico2 = Raspberry Pi Pico II / RP2350)")
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 
@@ -138,6 +140,9 @@ endif()
 
 # ---------------------------------------------------------------------------
 # Examples: every examples/<name>/main.c becomes a flashable .uf2
+#
+# Stdio goes over UART0 (CP210x USB-serial bridge on the bench), not the
+# Pico's native USB port.
 # ---------------------------------------------------------------------------
 if(PICO_OPTIGA_BUILD_EXAMPLES)
     file(GLOB _example_dirs "${CMAKE_CURRENT_SOURCE_DIR}/examples/*")
@@ -145,9 +150,13 @@ if(PICO_OPTIGA_BUILD_EXAMPLES)
         if(IS_DIRECTORY "${_dir}" AND EXISTS "${_dir}/main.c")
             get_filename_component(_name "${_dir}" NAME)
             add_executable(${_name} "${_dir}/main.c")
-            target_link_libraries(${_name} PRIVATE pico_optiga)
+            set(_example_deps pico_stdlib hardware_i2c)
+            if(TARGET pico_optiga)
+                list(APPEND _example_deps pico_optiga)
+            endif()
+            target_link_libraries(${_name} PRIVATE ${_example_deps})
             pico_enable_stdio_uart(${_name} 1)
-            pico_enable_stdio_usb(${_name} 1)
+            pico_enable_stdio_usb(${_name} 0)
             pico_add_extra_outputs(${_name})
         endif()
     endforeach()
