@@ -104,11 +104,22 @@ if(EXISTS "${OPTIGA_TRUST_M_DIR}/src")
         "${OPTIGA_TRUST_M_DIR}/include/pal")
     # The upstream sources are not warning-clean under the Pico SDK flags.
     target_compile_options(optiga_trust_m PRIVATE -w)
+    # The vendor's default config (optiga_lib_config_m_v3.h) enables the
+    # shielded connection, which requires a crypto PAL (pal_crypt_*,
+    # Mbed TLS based). Select the Pico config instead (plain IFX I2C,
+    # warm reset): include/optiga_lib_config_pico.h, picked up via
+    # OPTIGA_LIB_EXTERNAL. Our include/ dir is added to the search path
+    # so the header resolves.
     if(PICO_OPTIGA_SHIELDED_CONNECTION)
-        target_compile_definitions(optiga_trust_m PUBLIC OPTIGA_COMMS_SHIELDED_CONNECTION=1)
         message(WARNING
-            "PICO_OPTIGA_SHIELDED_CONNECTION=ON: Mbed TLS 4.x and a crypto PAL "
-            "(pal_crypt_*) must be provided. See PLAN.md, Phase 6.")
+            "PICO_OPTIGA_SHIELDED_CONNECTION=ON: the vendor v3 config is "
+            "used; Mbed TLS 4.x and a crypto PAL (pal_crypt_*) must be "
+            "provided. See PLAN.md, Phase 6.")
+    else()
+        target_include_directories(optiga_trust_m PRIVATE
+            "${CMAKE_CURRENT_SOURCE_DIR}/include")
+        target_compile_definitions(optiga_trust_m PUBLIC
+            OPTIGA_LIB_EXTERNAL="optiga_lib_config_pico.h")
     endif()
 else()
     message(WARNING
@@ -131,10 +142,25 @@ if(PICO_OPTIGA_SOURCES)
     add_library(pico_optiga STATIC ${PICO_OPTIGA_SOURCES})
     target_include_directories(pico_optiga PUBLIC
         "${CMAKE_CURRENT_SOURCE_DIR}/include")
-    set(_pico_optiga_deps pico_stdlib)
+    # The PAL implements the platform surface of the Infineon host
+    # library: it consumes the library's headers but links *below* it
+    # (the stack calls into the PAL). The include directories are added
+    # directly instead of via a link dependency, because
+    # target_link_libraries(pico_optiga ... optiga_trust_m) would put
+    # libpico_optiga.a *before* liboptiga_trust_m.a on the final link
+    # line and break single-pass archive resolution (the stack's
+    # pal_* references would go unresolved).
     if(TARGET optiga_trust_m)
-        list(APPEND _pico_optiga_deps optiga_trust_m)
+        target_include_directories(pico_optiga SYSTEM PUBLIC
+            "${OPTIGA_TRUST_M_DIR}/include"
+            "${OPTIGA_TRUST_M_DIR}/include/cmd"
+            "${OPTIGA_TRUST_M_DIR}/include/common"
+            "${OPTIGA_TRUST_M_DIR}/include/comms"
+            "${OPTIGA_TRUST_M_DIR}/include/ifx_i2c"
+            "${OPTIGA_TRUST_M_DIR}/include/pal")
     endif()
+    # hardware_i2c: the PAL (pal/pal_i2c.c) drives the SDK I2C driver.
+    set(_pico_optiga_deps pico_stdlib hardware_i2c)
     target_link_libraries(pico_optiga PUBLIC ${_pico_optiga_deps})
 endif()
 
@@ -151,6 +177,12 @@ if(PICO_OPTIGA_BUILD_EXAMPLES)
             get_filename_component(_name "${_dir}" NAME)
             add_executable(${_name} "${_dir}/main.c")
             set(_example_deps pico_stdlib hardware_i2c)
+            # Link order matters (single-pass archive resolution): the
+            # Infineon stack calls into the PAL, so optiga_trust_m must
+            # precede pico_optiga on the link line.
+            if(TARGET optiga_trust_m)
+                list(APPEND _example_deps optiga_trust_m)
+            endif()
             if(TARGET pico_optiga)
                 list(APPEND _example_deps pico_optiga)
             endif()

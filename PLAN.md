@@ -109,32 +109,71 @@ answers on the second probe) and reads I2C_STATE / MAX_SCL_FREQU /
 I2C_MODE. Every failure mode encountered is documented in the empirical
 facts table above.
 
-## Phase 2 — Pico PAL port
+## Phase 2 — Pico PAL port — **done (build), bench-verify with `optiga_open`**
 
 Port `extras/pal/NEW_PAL_TEMPLATE` to the Pico SDK, one file in `pal/` per
-template file. The template is small (~300 lines total); the Zephyr PAL
-(`Infineon/optiga-trust-m-zephyr`) is the reference for an RTOS-free/embedded
-port.
+template file (plus `pal_os_memory.c`, which the template omits but the
+library needs). The Zephyr PAL (`Infineon/optiga-trust-m-zephyr`) is the
+reference for an RTOS-free/embedded port.
 
 | File (in `pal/`) | Maps to |
 |---|---|
-| `pal_ifx_i2c_config.c` | `pal_i2c_t optiga_pal_i2c_context_0` → `&i2c0` (pico-sdk instance), address `0x30`; `optiga_vdd_0` / `optiga_reset_0` → `NULL` unless the pins are wired (Open question #1) |
-| `pal_i2c.c` | `pal_i2c_init/deinit/read/write/set_bitrate` → `i2c_init`, `i2c_write_blocking`, `i2c_read_blocking`, `i2c_set_freq`; synchronous blocking driver, so the "invoke upper-layer callback" path fires immediately |
-| `pal_gpio.c` | `pal_gpio_set_high/low` → `gpio_put` (only meaningful if VDD/RESET are wired) |
-| `pal_os_timer.c` | `get_time_in_milliseconds` → `to_ms_since_boot`; `delay_in_milliseconds` → `sleep_ms` |
-| `pal_os_event.c` | oneshot callback registration → pico-sdk hardware **timer alarm** (`add_repeating_timer_absolute` style, one-shot), callback fired from the timer ISR context |
-| `pal_os_lock.c` | single-core, no OS: no-op (or a `critical_section` for future FreeRTOS) |
-| `pal_os_datastore.c` | static RAM buffer (shielded-connection key storage is only needed in Phase 6) |
-| `pal_logger.c` | `printf` to pico-sdk stdio (USB serial), with the library's log-level filter |
-| `pal.c` | PAL registration glue |
+| `pal_ifx_i2c_config.c` | `pal_i2c_t optiga_pal_i2c_context_0` → `i2c0` (pico-sdk instance macro, *no* `&`), address `0x30`; `optiga_reset_0` → GP22; `optiga_vdd_0` → NULL hw context (VDD hardwired to 3.3 V, so the VDD toggle is a no-op) |
+| `pal_i2c.c` | `pal_i2c_init/deinit/read/write/set_bitrate` → `i2c_init`, `i2c_write_blocking` (stop=true — IFX is a STOP-based protocol), `i2c_read_blocking`, `i2c_set_baudrate`; blocking driver, so the upper-layer callback is invoked inline with the mapped event |
+| `pal_gpio.c` | `pal_gpio_set_high/low` → `gpio_put`, with safe bring-up (arm OUT register high *before* `gpio_set_dir(OUT)` — no low spike on RST) |
+| `pal_os_timer.c` | `get_time_in_microseconds/milliseconds` → `to_us/ms_since_boot`; `delay_in_milliseconds` → `sleep_ms` |
+| `pal_os_event.c` | oneshot callback registration → **software deadline**, pumped by the application (see design note below — no timer ISR) |
+| `pal_os_lock.c` | single-core, no OS: trivial counter (template as-is) |
+| `pal_os_datastore.c` | static RAM buffer (template as-is; shielded-connection key storage is only needed in Phase 6) |
+| `pal_logger.c` | `pal_logger_write` → `fwrite` to stdio (UART0); defines `logger_console` (the library declares it `extern`) |
+| `pal_os_memory.c` | `pal_os_malloc/calloc/free/memcpy/memset` → libc (template omits this file; Linux PAL is the reference) |
+| `pal.c` | `pal_init`/`pal_deinit` no-ops (template as-is) |
 
-Notes:
-- The blocking I2C driver means the IFX I2C stack's polling/event machinery
-  runs from the calling context; no interrupts needed for I2C itself.
-- Keep the PAL strictly inside `pal/`; nothing upstream is modified.
+Design notes (decisions made while porting):
+- **`pal_os_event` is a software deadline, not a hardware timer alarm.**
+  The stack's state machines are chains of one-shots (50 µs guard time,
+  1 ms busy polling, 2 s + 12 s reset sequence) with at most one pending at
+  a time. Firing the registered callback from a timer ISR would run blocking
+  I2C and printf in ISR context. Instead: `register_callback_oneshot()`
+  arms `{callback, args, deadline}`; the application's wait loop calls
+  `pal_os_event_trigger_registered_callback()` (the "pump") at ~1 ms
+  cadence, which matches the stack's own `PL_POLLING_INVERVAL_US`. The 50 µs
+  guard stretches to ≤ ~1 ms in practice — fine, the datasheet specifies a
+  minimum. The upstream `WAIT_AND_CHECK_STATUS` example macro is an *empty*
+  busy-wait (works on Linux because the Linux PAL runs an event thread);
+  our pump loop is the bare-metal replacement.
+- **I2C failure → `PAL_I2C_EVENT_BUSY`, never hard ERROR.** An address NAK
+  means the chip is busy/idle (Phase 1 facts). The PL treats BUSY and ERROR
+  identically (retry after 1 ms), but BUSY is the honest mapping; the PL
+  tolerates `PL_POLLING_MAX_CNT` = 200 consecutive NAKs (~200 ms) before
+  declaring a fatal error — well past the measured ~5 ms wake window.
+- **Link order:** the *stack* calls *into* the PAL, so `liboptiga_trust_m.a`
+  must precede `libpico_optiga.a` on the final link line (single-pass
+  archive resolution). `pico_optiga` therefore takes the vendor include
+  dirs directly (not via a link dependency), and examples link
+  `optiga_trust_m pico_optiga` in that order.
+- **Vendor config selection:** the vendor default config
+  (`optiga_lib_config_m_v3.h`) defines `OPTIGA_COMMS_SHIELDED_CONNECTION`,
+  which pulls in the crypto PAL (`pal_crypt_*`, Mbed TLS). We select
+  `include/optiga_lib_config_pico.h` via `OPTIGA_LIB_EXTERNAL` — based on
+  v3 with the shielded connection removed and
+  `OPTIGA_COMMS_DEFAULT_RESET_TYPE` set to WARM (2).
 
 **Exit criteria:** `optiga_trust_m` + `pal` link into a trivial example
 without linker errors (all `pal_*` symbols resolved).
+
+**Outcome (build-verified):** `examples/optiga_open` links and produces a
+valid `.uf2` (46.5 KB text, 3 KB bss). All 39 `pal_*` symbols resolve.
+`optiga_open` is also the first bench test of the whole stack: it creates an
+`optiga_util` instance and opens the application (the stack runs its own
+reset sequence on GP22, then negotiates frame size / bitrate). Note the
+vendor reset constants: RST low **2000 ms** (datasheet max is 2.5 ms —
+800× over; presumably a level-sensitive input, and the vendor's own Linux
+stack ships with it, but it is the first thing to suspect if open fails on
+the bench) and 12000 ms startup (vs. 15 ms tSTARTUP — conservative, safe).
+Fallback if the 2 s pulse misbehaves: patch `RESET_LOW_TIME_MSEC` /
+`STARTUP_TIME_MSEC` in `ifx_i2c_config.h` to 1000 / 25 (Phase 1-proven
+values) — a two-line vendor-header change, kept out of the tree until needed.
 
 ## Phase 3 — First library-level communication
 
@@ -142,7 +181,8 @@ The milestone the project is named after: *communicate with the chip* through
 the real Infineon stack.
 
 - `examples/optiga_hello/main.c` (directly on the Infineon API, before our
-  wrapper exists):
+  wrapper exists). Steps 1, 2 and 4 below are already implemented in
+  `examples/optiga_open` (the Phase 2 exit test) — extend it, don't rewrite:
   1. `optiga_util_create(0, callback, NULL)`
   2. `optiga_util_open_application(me, 0)` — the IFX I2C open: negotiates
      frame size, sets up the protocol
