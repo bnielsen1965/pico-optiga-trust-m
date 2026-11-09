@@ -237,7 +237,7 @@ the real Infineon stack.
 A `0x107` here would confirm a pre-paired chip → go to the unlock path in
 Open questions.
 
-## Phase 4 — The `pico_optiga` library — **done (build + native test verified; bench verification pending)**
+## Phase 4 — The `pico_optiga` library — **done (build + bench-verified)**
 
 Design and implement the stable API applications will use. Header in
 `include/pico_optiga/optiga.h`, implementation in `src/`.
@@ -279,9 +279,21 @@ Design rules:
 lines of app code; unit-testable logic (status mapping, timeouts) factored so
 it can be exercised natively later.
 
-**Outcome (build + native test verified; bench verification pending):**
-`optiga_hello` is now ~15 lines of app code (`init` → `get_info` → print →
-`deinit`) and the whole IFX protocol is hidden inside the library.
+**Outcome (build + bench-verified):** `optiga_hello` is now ~15 lines of app
+code (`init` → `get_info` → print → `deinit`) and the whole IFX protocol is
+hidden inside the library. Bench output (the Phase 4 exit test):
+
+```
+init: OK (app open, IFX negotiated)
+lifecycle: 0x07 (operational)
+CIM 0xCD   platform 0x16   model 0x33   ROM 0x01CC
+firmware id: 0x71101080   ESW build (BCD): 25 64
+  full UID: CD 16 33 CC 01 00 1C 00 01 00 00 0A 05 C7 40 00 08 00 1C 00 2D 80 10 10 71 25 64
+done
+```
+
+The chip is operational (LcsG 0x07) and not pre-paired — no 0x0107
+handshake, so the plain-IFX path is the one this unit uses.
 
 Files:
 - `include/pico_optiga/optiga.h` — the public surface (lifecycle,
@@ -316,12 +328,8 @@ Design decisions made while implementing:
 - **Sync-wait testability:** the status mapping is a pure function
   (native-tested). The pump/timeout loop stays target-side — it needs the
   PAL event pump and pico time, so it is verified on the bench, not
-  natively.
-
-**To bench-verify:** flash `build/pico2-local/optiga_hello.uf2`, expect
-`init: OK`, the decoded identity (lifecycle 0x07, CIM/platform/model,
-firmware id, ESW build, 27-byte UID), then `done`. A `0x0107` here would
-surface as `PICO_OPTIGA_EHANDSHAKE` → pre-paired chip → Open questions.
+  natively. (Now bench-verified: the open + both data-object reads
+  complete well inside the 2 s timeout, on the first try.)
 
 ## Phase 5 — Examples on our library
 
@@ -355,7 +363,12 @@ In rough order of likely value:
 
 ## Open questions
 
-1. **Chip state — "does the chip need to be …?"**
+1. ~~**Chip state — "does the chip need to be …?"**~~ — **resolved (Phase 4
+   bench run):** the unit opens over plain IFX with no 0x107 handshake and
+   reports LcsG 0x07 (operational), so it is **unlocked and not pre-paired** —
+   plain (unprotected) IFX I2C is the correct path for this chip. (Had it been
+   paired to a shielded connection, init would have surfaced
+   `PICO_OPTIGA_EHANDSHAKE` / 0x0107 and required Infineon unlock tooling.)
    - *Unlocked?* A factory-fresh Trust M is unlocked and works with plain
      (unprotected) IFX I2C immediately. If this chip was paired to a shielded
      connection previously, plain communication fails with a **0x107

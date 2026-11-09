@@ -17,23 +17,25 @@ objects, and (later) offload cryptography to the secure element.
 | Bus | I2C0: **SDA = GP20**, **SCL = GP21** |
 | I2C address | **0x30** (7-bit, factory default — datasheet Table 20/21) |
 | I2C speed | 100 kHz standard / 400 kHz fast mode supported (chip also does FM+ up to 1 MHz); the Infineon library starts at 100 kHz and auto-negotiates |
-| Power | Trust M **VDD tied to the Pico's 3.3 V** (supply range 1.62–5.5 V); **RESET not connected** |
-| Power-on | I2C is ready **15 ms** after power-on (datasheet Table 13); no software reset path, so we rely on the power-on state |
+| Power | Trust M **VDD tied to the Pico's 3.3 V** (supply range 1.62–5.5 V); **RESET wired to GP22** (active low) |
+| Power-on | I2C is ready **15 ms** after power-on (datasheet Table 13); firmware warm-resets the chip on GP22 at boot (1 ms pulse, 25 ms settle) for a clean start |
 | Debug serial | **CP210x USB-UART bridge on the Pico's UART0** — all stdio/debug output goes over UART (115200 8N1), not the Pico's native USB |
 | Datasheet | [`infineon-optiga-trust-m-sls32aia-datasheet-en.pdf`](infineon-optiga-trust-m-sls32aia-datasheet-en.pdf) (in this repo) |
 
 Consequences for the design:
 
-- PAL `optiga_vdd_0` / `optiga_reset_0` are configured as `NULL` (Phase 2) —
-  the Infineon library then skips cold/warm resets.
+- PAL `optiga_vdd_0` is `NULL` (VDD is hardwired — no cold reset /
+  hibernate); PAL `optiga_reset_0` is **GP22** (warm reset). The RST pin
+  must be driven high *before* its output driver is enabled (the RP2350
+  GPIO OUT register defaults to 0 — a naive `gpio_set_dir(OUT)` emits a
+  low spike on RST).
 - Examples are built with `pico_enable_stdio_uart(1)` /
   `pico_enable_stdio_usb(0)`.
-- Pull-ups: the Trust M module carries them on board; the Phase 1 probe also
+- Pull-ups: the Trust M module carries them on board; the firmware also
   enables the Pico's weak internal pull-ups as a safety net.
-- **Chip state**: is this chip factory-fresh, or has a *shielded connection*
-  (pairing) been applied to it? A pre-paired chip answers the raw I2C probe
-  fine but rejects the library handshake with a `0x107` error and would need
-  Infineon's tooling to unlock it. Phase 3 settles this.
+- **Chip state (resolved)**: this unit is factory-unlocked and not
+  pre-paired — it opens over plain IFX I2C with no `0x107` handshake and
+  reports LcsG `0x07` (operational).
 
 ## Software stack
 
@@ -62,6 +64,7 @@ Consequences for the design:
 ├── src/                      # pico_optiga implementation (Phase 4)
 ├── pal/                      # Pico PAL for the Infineon library (Phase 2)
 ├── examples/                 # One folder per example app, each with a main.c
+├── tests/                    # Native (host) unit tests, own CMake project
 ├── third_party/
 │   └── optiga-trust-m/       # Infineon host library (git submodule)
 └── docs/                     # Additional notes
@@ -109,12 +112,12 @@ Expected output on a healthy, unpaired chip: a bus scan showing `0x30
 ## Status
 
 - [x] Phase 0 — CMake project assembled, README + plan written
-- [x] Phase 1 — raw I2C probe (`examples/i2c_probe`) — **code complete, awaiting bench run**
-- [ ] Phase 2 — Pico PAL port
-- [ ] Phase 3 — first library-level communication (chip version / serial)
-- [ ] Phase 4 — `pico_optiga` public API
-- [ ] Phase 5 — examples on our library
-- [ ] Phase 6 — optional: shielded connection, data objects, crypto
+- [x] Phase 1 — raw I2C probe (`examples/i2c_probe`) — bench-verified
+- [x] Phase 2 — Pico PAL port — bench-verified (open/close over the real stack)
+- [x] Phase 3 — first library-level communication (chip identity) — bench-verified
+- [x] Phase 4 — `pico_optiga` public API — bench-verified (`optiga_hello` on the library)
+- [ ] Phase 5 — examples on our library (`optiga_info`, `data_objects`, `random`)
+- [ ] Phase 6 — optional: crypto offload, shielded connection, power mgmt
 
 See [PLAN.md](PLAN.md) for details.
 
