@@ -72,6 +72,7 @@ Hard-won while debugging the raw probe against the bench unit
 | Warm reset (RST, active low) | low pulse **10 µs … 2.5 ms** (we use 1 ms); first transmission ≥ **tSTARTUP = 15 ms** (20 ms if NVM pending) after the rising edge; SDA/SCL high during the pulse; VCC stays powered | Datasheet 5.1.4.2, Table 14 |
 | RST wiring | **GP22 → module RST** (wired). Bring the pin up as output-high *before* enabling the driver — the RP2350 GPIO OUT register defaults to 0, so a naive `gpio_set_dir(OUT)` emits a low spike on RST | bench |
 | RP2350 I2C0 pin options | SDA 0/4/8/12/16/**20**/24/28, SCL 1/5/9/13/17/**21**/25/29 — GP20/21 is a valid I2C0 mapping (unlike the RP2040) | `pico-sdk/src/rp2350/rp2350a_interface_pins.json` |
+| Pico SDK 2.x I2C API | `i2c_write/read_blocking(i2c, addr, data, len, nostop)`: `addr` is the **7-bit address, unshifted** (the driver writes it straight into the hw target register; `addr >= 0x80` is rejected); the last param is **`nostop`** (false = issue a STOP — opposite polarity of SDK 1.x `ack`); returns bytes transferred, `0` = addr ACKed/data NAKed, `-1` (`PICO_ERROR_GENERIC`) = addr NAK, `-3` (`PICO_ERROR_TIMEOUT`) = timeout | `pico-sdk/src/rp2_common/hardware_i2c/i2c.c` |
 
 The IFX stack's own busy polling (`PL_POLLING_INVERVAL_US` = 1 ms) is
 consistent with the observed 5 ms wake window, so the Phase 3 handshake
@@ -109,7 +110,7 @@ answers on the second probe) and reads I2C_STATE / MAX_SCL_FREQU /
 I2C_MODE. Every failure mode encountered is documented in the empirical
 facts table above.
 
-## Phase 2 — Pico PAL port — **done (build), bench-verify with `optiga_open`**
+## Phase 2 — Pico PAL port — **done (build + bench-verified)**
 
 Port `extras/pal/NEW_PAL_TEMPLATE` to the Pico SDK, one file in `pal/` per
 template file (plus `pal_os_memory.c`, which the template omits but the
@@ -119,7 +120,7 @@ reference for an RTOS-free/embedded port.
 | File (in `pal/`) | Maps to |
 |---|---|
 | `pal_ifx_i2c_config.c` | `pal_i2c_t optiga_pal_i2c_context_0` → `i2c0` (pico-sdk instance macro, *no* `&`), address `0x30`; `optiga_reset_0` → GP22; `optiga_vdd_0` → NULL hw context (VDD hardwired to 3.3 V, so the VDD toggle is a no-op) |
-| `pal_i2c.c` | `pal_i2c_init/deinit/read/write/set_bitrate` → `i2c_init`, `i2c_write_blocking` (stop=true — IFX is a STOP-based protocol), `i2c_read_blocking`, `i2c_set_baudrate`; blocking driver, so the upper-layer callback is invoked inline with the mapped event |
+| `pal_i2c.c` | `pal_i2c_init/deinit/read/write/set_bitrate` → `i2c_init`, `i2c_write_blocking` / `i2c_read_blocking` (7-bit address **unshifted**, last arg `nostop=false` = issue STOP — IFX is a STOP-based protocol), `i2c_set_baudrate`; blocking driver, so the upper-layer callback is invoked inline with the mapped event |
 | `pal_gpio.c` | `pal_gpio_set_high/low` → `gpio_put`, with safe bring-up (arm OUT register high *before* `gpio_set_dir(OUT)` — no low spike on RST) |
 | `pal_os_timer.c` | `get_time_in_microseconds/milliseconds` → `to_us/ms_since_boot`; `delay_in_milliseconds` → `sleep_ms` |
 | `pal_os_event.c` | oneshot callback registration → **software deadline**, pumped by the application (see design note below — no timer ISR) |
@@ -132,7 +133,9 @@ reference for an RTOS-free/embedded port.
 Design notes (decisions made while porting):
 - **`pal_os_event` is a software deadline, not a hardware timer alarm.**
   The stack's state machines are chains of one-shots (50 µs guard time,
-  1 ms busy polling, 2 s + 12 s reset sequence) with at most one pending at
+  1 ms busy polling, 2 ms + 12 ms reset sequence — the vendor passes its
+   "MSEC" constants straight into the µs parameter, a unit mix-up present
+   in all their PALs) with at most one pending at
   a time. Firing the registered callback from a timer ISR would run blocking
   I2C and printf in ISR context. Instead: `register_callback_oneshot()`
   arms `{callback, args, deadline}`; the application's wait loop calls
@@ -162,18 +165,35 @@ Design notes (decisions made while porting):
 **Exit criteria:** `optiga_trust_m` + `pal` link into a trivial example
 without linker errors (all `pal_*` symbols resolved).
 
-**Outcome (build-verified):** `examples/optiga_open` links and produces a
-valid `.uf2` (46.5 KB text, 3 KB bss). All 39 `pal_*` symbols resolve.
-`optiga_open` is also the first bench test of the whole stack: it creates an
-`optiga_util` instance and opens the application (the stack runs its own
-reset sequence on GP22, then negotiates frame size / bitrate). Note the
-vendor reset constants: RST low **2000 ms** (datasheet max is 2.5 ms —
-800× over; presumably a level-sensitive input, and the vendor's own Linux
-stack ships with it, but it is the first thing to suspect if open fails on
-the bench) and 12000 ms startup (vs. 15 ms tSTARTUP — conservative, safe).
-Fallback if the 2 s pulse misbehaves: patch `RESET_LOW_TIME_MSEC` /
-`STARTUP_TIME_MSEC` in `ifx_i2c_config.h` to 1000 / 25 (Phase 1-proven
-values) — a two-line vendor-header change, kept out of the tree until needed.
+**Outcome (bench-verified):** `examples/optiga_open` opens *and* closes the
+application on the bench (`open_application: OK (0x0000)`,
+`close_application: OK (0x0000)`) with the **stock vendor timing constants**
+— the port carries no `ifx_i2c_config.h` patches.
+
+Bench debugging found and fixed three PAL bugs (the vendor stack itself is
+untouched):
+ 1. `pal_os_event` deadline check was inverted
+    (`absolute_time_diff_us(deadline, now) <= 0` is true *before* the
+    deadline) — the one-shot chain fired once early, then never again
+    (`05fc0c0`).
+ 2. `pal_i2c` double-shifted the address: the Pico SDK takes the 7-bit
+    address *unshifted* (the driver writes it straight into the hw target
+    register and the controller appends the R/W bit); passing
+    `addr << 1` put `2*addr` on the wire and the chip NAKed every
+    transaction — 200 NAKs, `OPTIGA_COMMS_ERROR` (0x0102).
+ 3. `pal_i2c` used the SDK 2.x `nostop` parameter with 1.x polarity:
+    `true` = *no* STOP, so register writes did not terminate with the STOP
+    the IFX protocol requires.
+
+Red herring, documented for the next porter: while chasing bug 2, the three
+vendor timing constants were patched (RST low 1000, startup 25000, poll
+5000) and the open passed — then all three were reverted to stock
+(2000 / 12000 / 1000) and the open **still passes**. The datasheet margins
+that motivated the patches (2 ms RST pulse vs. the 2.5 ms max, 12 ms
+startup vs. the 15 ms tSTARTUP minimum) are real but not binding in
+practice on this bench: the PL's 200× NAK-retry loop absorbs the 3 ms
+early start, and the stock pulse (2.0–2.x ms with 1 ms pump jitter)
+stays inside the window.
 
 ## Phase 3 — First library-level communication
 
@@ -181,8 +201,9 @@ The milestone the project is named after: *communicate with the chip* through
 the real Infineon stack.
 
 - `examples/optiga_hello/main.c` (directly on the Infineon API, before our
-  wrapper exists). Steps 1, 2 and 4 below are already implemented in
-  `examples/optiga_open` (the Phase 2 exit test) — extend it, don't rewrite:
+  wrapper exists). Steps 1, 2 and 4 below are already implemented and
+  bench-verified in `examples/optiga_open` (the Phase 2 exit test) —
+  extend it, don't rewrite:
   1. `optiga_util_create(0, callback, NULL)`
   2. `optiga_util_open_application(me, 0)` — the IFX I2C open: negotiates
      frame size, sets up the protocol

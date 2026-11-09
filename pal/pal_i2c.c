@@ -13,7 +13,11 @@
  *
  *  - i2c_write_blocking()/i2c_read_blocking() return the byte count on
  *    success (not 0), 0 when the address was ACKed but the data NAKed,
- *    and a negative value on address NAK / timeout.
+ *    -1 (PICO_ERROR_GENERIC) on address NAK, -3 (PICO_ERROR_TIMEOUT)
+ *    on timeout.
+ *  - The addr parameter is the 7-bit address UNSHIFTED (the driver
+ *    drives the hw target register directly) and the last parameter is
+ *    *nostop* (false = issue STOP) in SDK 2.x.
  *  - An address NAK from the Trust M means the chip is busy or in idle
  *    state, not that it is absent. The IFX physical layer treats
  *    PAL_I2C_EVENT_BUSY as "retry after PL_POLLING_INVERVAL_US (1 ms)",
@@ -23,9 +27,30 @@
  *    STOP condition to the next START, so writes terminate with a STOP.
  */
 
+#include <stdio.h>
+
 #include "hardware/i2c.h"
 #include "hardware/gpio.h"
 #include "pal_i2c.h"
+
+// --- Bench trace ---------------------------------------------------------
+// Prints every I2C transaction so the IFX negotiation can be followed on
+// the serial console: which register is written/read, with what data, and
+// what the Pico SDK driver reported (rc >= 0: bytes transferred, 0: addr
+// ACKed/data NAKed, < 0: addr NAK/timeout). Low volume: a few lines per
+// negotiation step, one line per retry.
+static void trace_i2c(const char *op, const pal_i2c_t *p_i2c_context,
+                      const uint8_t *p_data, uint16_t length, int rc) {
+    printf("[I2C] %s @0x%02X %uB rc=%d", op, p_i2c_context->slave_address,
+           (unsigned)length, rc);
+    if (rc > 0) {
+        for (uint16_t i = 0; i < length; i++) {
+            printf(" %02X", p_data[i]);
+        }
+    }
+    printf("\n");
+}
+// --- end bench trace -----------------------------------------------------
 
 #define TRUSTM_I2C             i2c0
 #define TRUSTM_I2C_SDA         20u
@@ -90,9 +115,19 @@ pal_status_t pal_i2c_write(const pal_i2c_t *p_i2c_context, uint8_t *p_data, uint
 
         // Blocking write; the transaction ends with a STOP (the IFX
         // protocol is STOP-based, see file header).
+        //
+        // Pico SDK 2.x API notes (both bit us in bench testing):
+        //   - addr is the 7-bit address, UNSHIFTED: the driver writes it
+        //     straight into the hw target register and the controller
+        //     appends the R/W bit. Passing (addr << 1) puts 2*addr on
+        //     the wire and the chip NAKs every transaction.
+        //   - the last parameter is *nostop*: false = issue a STOP after
+        //     the transfer (1.x called this "ack" with opposite
+        //     polarity).
         int rc = i2c_write_blocking(
-            i2c, (uint16_t)(p_i2c_context->slave_address << 1), p_data, length, true);
+            i2c, (uint8_t)p_i2c_context->slave_address, p_data, length, false);
 
+        trace_i2c("W", p_i2c_context, p_data, length, rc);
         if (rc >= 0) {
             // rc > 0: fully acknowledged; rc == 0: address ACKed but the
             // data byte NAKed. Either way the chip answered its address,
@@ -127,10 +162,12 @@ pal_status_t pal_i2c_read(const pal_i2c_t *p_i2c_context, uint8_t *p_data, uint1
         gp_pal_i2c_current_ctx = (pal_i2c_t *)p_i2c_context;
         i2c_inst_t *i2c = (i2c_inst_t *)p_i2c_context->p_i2c_hw_config;
 
-        // Blocking read (ends with NAK + STOP).
+        // Blocking read (master NAKs the last byte, then STOP). 7-bit
+        // address unshifted, last arg nostop=false (see pal_i2c_write).
         int rc = i2c_read_blocking(
-            i2c, (uint16_t)(p_i2c_context->slave_address << 1), p_data, length, false);
+            i2c, (uint8_t)p_i2c_context->slave_address, p_data, length, false);
 
+        trace_i2c("R", p_i2c_context, p_data, length, rc);
         if (rc >= 0) {
             invoke_upper_layer_callback(gp_pal_i2c_current_ctx, PAL_I2C_EVENT_SUCCESS);
             status = PAL_STATUS_SUCCESS;
@@ -165,6 +202,7 @@ pal_status_t pal_i2c_set_bitrate(const pal_i2c_t *p_i2c_context, uint16_t bitrat
         }
         i2c_set_baudrate((i2c_inst_t *)p_i2c_context->p_i2c_hw_config,
                          (uint32_t)bitrate * 1000u);
+        printf("[I2C] br %u kHz\n", (unsigned)bitrate);
         return_status = PAL_STATUS_SUCCESS;
         event = PAL_I2C_EVENT_SUCCESS;
     } else {

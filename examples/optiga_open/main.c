@@ -21,8 +21,10 @@
  *         sleep_ms(1);
  *     }
  *
- * Expect a ~14 s pause during open_application (2 s + 12 s reset
- * sequence) before the result prints.
+ * The open completes in well under a second: the reset sequence is a
+ * 1 ms RST-low pulse + 25 ms startup (datasheet tSTARTUP = 15 ms, 20 ms
+ * if NVM programming was pending; see the PICO PATCH in
+ * ifx_i2c_config.h), then the IFX negotiation runs at 100 kHz.
  */
 
 #include <pico/stdlib.h>
@@ -74,7 +76,7 @@ int main(void) {
 
     optiga_lib_status_t status;
 
-    printf("Opening application (expect ~14 s: 2 s reset + 12 s startup)...\n");
+    printf("Opening application (1 ms RST + 25 ms startup, then IFX negotiation)...\n");
     lib_status = OPTIGA_LIB_BUSY;
     status = optiga_util_open_application(util, 0);
     if (OPTIGA_LIB_SUCCESS == status) {
