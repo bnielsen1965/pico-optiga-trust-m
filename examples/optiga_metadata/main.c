@@ -186,6 +186,24 @@ static int ac_writable_now(const ac_t *ac, uint8_t lcso) {
     return 0;
 }
 
+/*
+ * Is this a safe scratch slot for Step 2?
+ *   - life cycle is creation (data writes don't advance it, and it is
+ *     writable via LcsO<op);
+ *   - has capacity (max size > 0);
+ *   - data type is generic: the 0xE8 tag is *absent* (a generic data slot)
+ *     or explicitly byte-string. An explicit non-data type (key / cert /
+ *     secret / counter) disqualifies.
+ *   - Change AC is open now (ALW, or LcsO<X with the object below X).
+ */
+static int is_safe_scratch(const meta_t *m) {
+    return m->valid
+           && m->have_lcso && (m->lcso == LCS_CREATION)
+           && m->have_max && (m->max_size > 0u)
+           && (!m->have_dtype || (m->dtype == DTYPE_BYTE_STRING))
+           && ac_writable_now(&m->change, m->lcso);
+}
+
 static void print_hex(const uint8_t *buf, size_t len) {
     for (size_t i = 0; i < len; i++) {
         printf("%02X ", (unsigned)buf[i]);
@@ -280,12 +298,7 @@ int main(void) {
         printf("%-13s ", m->read.str[0] ? m->read.str : "-");
         printf("%-9s\n", m->exec.str[0] ? m->exec.str : "-");
 
-        /* Safe scratch candidate? */
-        int safe = m->valid
-                   && m->have_dtype && (m->dtype == DTYPE_BYTE_STRING)
-                   && m->have_lcso && (m->lcso == LCS_CREATION)
-                   && ac_writable_now(&m->change, m->have_lcso ? m->lcso : 0);
-        if (safe) {
+        if (is_safe_scratch(m)) {
             safe_count++;
         }
     }
@@ -293,21 +306,15 @@ int main(void) {
     printf("\n");
 
     /* Actionable summary for Step 2. */
-    printf("Safe scratch candidates (byte-string data, LcsO=creation, "
-           "Change open):\n");
+    printf("Safe scratch candidates (LcsO=creation, capacity>0, generic/"
+           "byte-string data, Change open):\n");
     if (safe_count == 0) {
         printf("  (none found — do NOT write; inspect the table above and "
                "confirm with Infineon before proceeding)\n");
     } else {
         for (size_t i = 0; i < N_CANDIDATES; i++) {
             const meta_t *m = &meta[i];
-            if (!m->valid) {
-                continue;
-            }
-            int safe = m->have_dtype && (m->dtype == DTYPE_BYTE_STRING)
-                       && m->have_lcso && (m->lcso == LCS_CREATION)
-                       && ac_writable_now(&m->change, m->lcso);
-            if (safe) {
+            if (is_safe_scratch(m)) {
                 printf("  0x%04X  %-13s  (max %u B, used %u B, Change %s)\n",
                        (unsigned)kCandidates[i].oid, kCandidates[i].name,
                        m->have_max ? (unsigned)m->max_size : 0u,

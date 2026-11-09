@@ -348,18 +348,21 @@ int pico_optiga_read_data_obj(uint16_t oid, uint8_t *buf, size_t len,
     return rc;
 }
 
-int pico_optiga_write_data_obj(uint16_t oid, const uint8_t *buf,
-                               size_t len) {
-    if ((NULL == buf) || (0 == len) || (len > 0xFFFFu)) {
+int pico_optiga_write_data_obj(uint16_t oid, pico_optiga_write_mode_t mode,
+                               const uint8_t *buf, size_t len) {
+    if ((NULL == buf) || (0 == len) || (len > 0xFFFFu) ||
+        ((uint32_t)mode > (uint32_t)PICO_OPTIGA_ERASE_AND_WRITE)) {
         return PICO_OPTIGA_EINVAL;
     }
+    uint8_t wtype = (PICO_OPTIGA_ERASE_AND_WRITE == mode)
+                        ? OPTIGA_UTIL_ERASE_AND_WRITE
+                        : OPTIGA_UTIL_WRITE_ONLY;
     int rc = op_begin();
     if (PICO_OPTIGA_OK != rc) {
         return rc;
     }
     g_status = OPTIGA_LIB_BUSY;
-    rc = await_result(optiga_util_write_data(g_util, oid,
-                                             OPTIGA_UTIL_WRITE_ONLY, 0, buf,
+    rc = await_result(optiga_util_write_data(g_util, oid, wtype, 0, buf,
                                              (uint16_t)len));
     op_end();
     return rc;

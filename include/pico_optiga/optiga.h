@@ -139,11 +139,33 @@ int pico_optiga_read_data_obj(uint16_t oid, uint8_t *buf, size_t len,
                               size_t *out_len);
 
 /*
- * Write `len` bytes from `buf` into data object `oid` at offset 0
- * (write-only, no erase). The application must be open.
+ * Write modes for pico_optiga_write_data_obj(), mirroring the vendor's
+ * OPTIGA_UTIL_WRITE_ONLY / OPTIGA_UTIL_ERASE_AND_WRITE.
+ *
+ * Both write only the *data payload* — never the object's metadata or
+ * life cycle. The difference is what happens to the bytes we don't write:
  */
-int pico_optiga_write_data_obj(uint16_t oid, const uint8_t *buf,
-                               size_t len);
+typedef enum {
+    /* Overwrite `len` bytes at offset 0, leaving the rest of the object
+     * untouched. One NVM program cycle (cheapest). */
+    PICO_OPTIGA_WRITE_ONLY = 0,
+    /* Erase the whole object first, then write `len` bytes at offset 0;
+     * the remainder is left blank. Costs an extra NVM erase cycle, but
+     * leaves the object's contents fully defined. */
+    PICO_OPTIGA_ERASE_AND_WRITE = 1,
+} pico_optiga_write_mode_t;
+
+/*
+ * Write `len` bytes from `buf` into data object `oid` at offset 0.
+ * `mode` selects WRITE_ONLY (overwrite in place) or ERASE_AND_WRITE
+ * (erase the object, then write). The application must be open.
+ *
+ * This changes only the object's *data* — never its metadata (access
+ * conditions) or life cycle. It is safe and repeatable, bounded only by
+ * NVM endurance (~1e5 cycles), so keep the write count low.
+ */
+int pico_optiga_write_data_obj(uint16_t oid, pico_optiga_write_mode_t mode,
+                               const uint8_t *buf, size_t len);
 
 /*
  * Read the TLV metadata of data object `oid` into `buf` (at most `len`

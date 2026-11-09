@@ -355,18 +355,30 @@ confirmed open, a handful of writes max.**
 
 Steps:
 
-1. **`optiga_metadata` — read-only metadata inventory (Step 1).** Reads and
-   decodes each candidate object's TLV metadata (LcsO, Change/Read/Execute
-   AC, max/used size, data type) and prints a "safe scratch candidates"
-   summary: byte-string data + LcsO=creation + Change open. Pure reads —
-   nothing on the chip can change. Output is the map for picking the Step 2
-   target. *Do not assume a scratch OID a priori:* on some SLS32AIA units
-   `0xF1D0` ships as a locked Authorization Reference (Read=NEV), so the
-   inventory is what tells us which slots are actually open.
-2. **`data_objects` — write to a confirmed-open slot (Step 2).** Pick a slot
-   Step 1 marked safe. Write a small marker (erase-and-write), read it back,
-   reset the chip, read again → proves persistence. Data only; no metadata,
-   no life cycle.
+1. **`optiga_metadata` — read-only metadata inventory (Step 1).** ✅ Built +
+   bench-verified. Reads and decodes each candidate object's TLV metadata
+   (LcsO, Change/Read/Execute AC, max/used size, data type) and prints a
+   "safe scratch candidates" summary: LcsO=creation + capacity>0 +
+   generic/byte-string data + Change open. Pure reads — nothing on the chip
+   can change. Output is the map for picking the Step 2 target. *Do not
+   assume a scratch OID a priori:* on some SLS32AIA units `0xF1D0` ships as a
+   locked Authorization Reference (Read=NEV), so the inventory is what tells
+   us which slots are actually open.
+
+   **Bench result (this chip):** confirmed the hazard — `0xF1D0` is the
+   locked AUTHREF (LcsO=operational, Read=`NEV`, shielded Change AC). The
+   open scratch slots are `0xF1D1`–`0xF1D4` (Arbitrary Data Type 3, 140 B,
+   LcsO=creation, Change=`LcsO<0x07`, Read=`ALW`); `0xF1E0`/`0xF1E1` are open
+   but only 5 B. `0xE0F2/F3/FD` have max=0 (no capacity). Chose **`0xF1D1`**
+   as the Step 2 target.
+
+2. **`data_objects` — write to a confirmed-open slot (Step 2).** ✅ Built.
+   Writes a 16-byte marker to `0xF1D1` (ERASE_AND_WRITE), reads it back,
+   arms the watchdog to reset the board, and on the next boot re-reads the
+   slot to confirm the marker survived → proves NVM persistence. Self-
+   contained (write→reset→confirm in one flash). Data only; no metadata, no
+   life cycle. Library change: `pico_optiga_write_data_obj()` now takes a
+   `pico_optiga_write_mode_t` (WRITE_ONLY / ERASE_AND_WRITE).
 3. **`random` — pull 32 bytes of true random from the chip (Step 3).**
 
 ## Phase 6 — Optional extensions (decide per need)
