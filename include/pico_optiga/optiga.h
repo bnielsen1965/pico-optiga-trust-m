@@ -182,6 +182,20 @@ int pico_optiga_write_data_obj(uint16_t oid, pico_optiga_write_mode_t mode,
 int pico_optiga_read_metadata(uint16_t oid, uint8_t *buf, size_t len,
                               size_t *out_len);
 
+/* ---------------------------------------------------------------------
+ * Random
+ * ------------------------------------------------------------------- */
+
+/*
+ * Generate `len` bytes of true random from the chip's hardware TRNG into
+ * `buf`. `len` must be 8..256 bytes (the chip's supported range). This is
+ * a pure read — it never modifies the chip. The application must be open.
+ *
+ * Uses the true (hardware) random number generator, so the output is
+ * suitable for keys, nonces, and other secrets.
+ */
+int pico_optiga_get_random(uint8_t *buf, size_t len);
+
 #ifdef __cplusplus
 }
 #endif

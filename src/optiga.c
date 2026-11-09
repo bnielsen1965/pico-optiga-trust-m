@@ -29,6 +29,7 @@
 #include "hardware/i2c.h"
 
 #include "optiga_util.h"
+#include "optiga_crypt.h"
 #include "pal_os_event.h"
 
 #include "optiga_status.h"
@@ -74,13 +75,17 @@
  * ------------------------------------------------------------------- */
 
 static optiga_util_t *g_util = NULL;
+static optiga_crypt_t *g_crypt = NULL;
 static volatile optiga_lib_status_t g_status = OPTIGA_LIB_SUCCESS;
 static bool g_inited = false;
 static bool g_app_open = false;
 static bool g_op_inflight = false;
 static critical_section_t g_cs;
 
-static void util_callback(void *context, optiga_lib_status_t return_status) {
+/* Completion callback shared by the util and crypt instances: both drive
+ * the same optiga_cmd scheduler and one-shot event slot, and we run one
+ * operation at a time (op_begin/op_end), so a single g_status is enough. */
+static void op_callback(void *context, optiga_lib_status_t return_status) {
     (void)context;
     g_status = return_status;
 }
@@ -200,10 +205,18 @@ int pico_optiga_init(void) {
     gpio_pull_up(OPTIGA_I2C_SDA_PIN);
     gpio_pull_up(OPTIGA_I2C_SCL_PIN);
 
-    /* 4. The util instance (heap-allocated once by the vendor; static
-     *    for the lifetime of the process). */
-    g_util = optiga_util_create(0, util_callback, NULL);
+    /* 4. The util and crypt instances (each heap-allocated once by the
+     *    vendor; static for the lifetime of the process). Both share the
+     *    one optiga_cmd scheduler and PAL event slot, so creating the
+     *    crypt instance here has no bus side effect. */
+    g_util = optiga_util_create(0, op_callback, NULL);
     if (NULL == g_util) {
+        return PICO_OPTIGA_EIO;
+    }
+    g_crypt = optiga_crypt_create(0, op_callback, NULL);
+    if (NULL == g_crypt) {
+        (void)optiga_util_destroy(g_util);
+        g_util = NULL;
         return PICO_OPTIGA_EIO;
     }
 
@@ -232,6 +245,10 @@ int pico_optiga_deinit(void) {
         }
         (void)optiga_util_destroy(g_util);
         g_util = NULL;
+    }
+    if (NULL != g_crypt) {
+        (void)optiga_crypt_destroy(g_crypt);
+        g_crypt = NULL;
     }
 
     g_app_open = false;
@@ -389,6 +406,22 @@ int pico_optiga_read_metadata(uint16_t oid, uint8_t *buf, size_t len,
         return rc;
     }
     rc = read_metadata_impl(oid, buf, len, out_len);
+    op_end();
+    return rc;
+}
+
+int pico_optiga_get_random(uint8_t *buf, size_t len) {
+    /* The chip generates 8..256 bytes per call. */
+    if ((NULL == buf) || (len < 8u) || (len > 256u)) {
+        return PICO_OPTIGA_EINVAL;
+    }
+    int rc = op_begin();
+    if (PICO_OPTIGA_OK != rc) {
+        return rc;
+    }
+    g_status = OPTIGA_LIB_BUSY;
+    rc = await_result(optiga_crypt_random(g_crypt, OPTIGA_RNG_TYPE_TRNG, buf,
+                                          (uint16_t)len));
     op_end();
     return rc;
 }

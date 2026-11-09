@@ -379,7 +379,17 @@ Steps:
    contained (write→reset→confirm in one flash). Data only; no metadata, no
    life cycle. Library change: `pico_optiga_write_data_obj()` now takes a
    `pico_optiga_write_mode_t` (WRITE_ONLY / ERASE_AND_WRITE).
-3. **`random` — pull 32 bytes of true random from the chip (Step 3).**
+3. **`random` — pull 32 bytes of true random from the chip (Step 3).** ✅
+   Built. `pico_optiga_get_random()` wraps `optiga_crypt_random()` with the
+   hardware TRNG type (8..256 bytes). Pure read — no NVM/lifecycle risk. The
+   example fetches two 32-byte blocks and confirms they differ (live RNG).
+   Library change: `pico_optiga_init()` now also creates an `optiga_crypt_t`
+   instance (shares the same `optiga_cmd` scheduler + one-shot event slot as
+   the util instance; one completion callback serves both).
+
+**Phase 5 status:** Steps 1–2 bench-verified; Step 3 built (bench pending).
+All three examples (`optiga_metadata`, `data_objects`, `random`) produce
+flashable `.uf2`s.
 
 ## Phase 6 — Optional extensions (decide per need)
 
