@@ -512,6 +512,147 @@ int pico_optiga_ecdsa_verify(const uint8_t *digest, size_t digest_len,
     return rc;
 }
 
+/* ---------------------------------------------------------------------
+ * Crypto (KDF / agreement / hash / symmetric)
+ *
+ * All run on g_crypt (same scheduler + one-shot event slot as the rest).
+ * Secrets/keys stay on the chip; only digests, derived keys, and shared
+ * secrets cross to the host.
+ * ------------------------------------------------------------------- */
+
+int pico_optiga_sha256(const uint8_t *data, size_t len, uint8_t out[32]) {
+    if ((NULL == data) || (0u == len) || (NULL == out)) {
+        return PICO_OPTIGA_EINVAL;
+    }
+    int rc = op_begin();
+    if (PICO_OPTIGA_OK != rc) {
+        return rc;
+    }
+    hash_data_from_host_t hd;
+    hd.buffer = data;
+    hd.length = (uint32_t)len;
+    g_status = OPTIGA_LIB_BUSY;
+    rc = await_result(optiga_crypt_hash(g_crypt, OPTIGA_HASH_TYPE_SHA_256,
+                                        OPTIGA_CRYPT_HOST_DATA, &hd, out));
+    op_end();
+    return rc;
+}
+
+int pico_optiga_ecdh(uint16_t oid, const uint8_t *pub, size_t pub_len,
+                     uint8_t *out, size_t out_cap) {
+    if ((NULL == pub) || (0u == pub_len) || (pub_len > 0xFFFFu) ||
+        ((NULL != out) && (out_cap < 32u))) {
+        return PICO_OPTIGA_EINVAL;
+    }
+    int rc = op_begin();
+    if (PICO_OPTIGA_OK != rc) {
+        return rc;
+    }
+    optiga_key_id_t key_id = (optiga_key_id_t)oid;
+    public_key_from_host_t pk;
+    pk.public_key = (uint8_t *)pub;  /* ECDH only reads the key */
+    pk.length = (uint16_t)pub_len;
+    pk.key_type = (uint8_t)OPTIGA_ECC_CURVE_NIST_P_256;
+    g_status = OPTIGA_LIB_BUSY;
+    rc = await_result(optiga_crypt_ecdh(g_crypt, key_id, &pk,
+                                        (NULL != out) ? TRUE : FALSE, out));
+    op_end();
+    return rc;
+}
+
+int pico_optiga_hkdf(uint16_t secret, const uint8_t *salt, size_t salt_len,
+                     const uint8_t *info, size_t info_len,
+                     uint8_t *out, size_t out_len) {
+    if ((NULL == out) || (0u == out_len) || (out_len > 32u) ||
+        ((NULL != salt) && (salt_len > 0xFFFFu)) ||
+        ((NULL != info) && (info_len > 0xFFFFu))) {
+        return PICO_OPTIGA_EINVAL;
+    }
+    int rc = op_begin();
+    if (PICO_OPTIGA_OK != rc) {
+        return rc;
+    }
+    g_status = OPTIGA_LIB_BUSY;
+    rc = await_result(optiga_crypt_hkdf(g_crypt, OPTIGA_HKDF_SHA_256, secret,
+                                        salt, (uint16_t)salt_len,
+                                        info, (uint16_t)info_len,
+                                        (uint16_t)out_len, TRUE, out));
+    op_end();
+    return rc;
+}
+
+int pico_optiga_symmetric_encrypt(pico_optiga_sym_mode_t mode, uint16_t key_oid,
+                                  const uint8_t *plain, size_t plain_len,
+                                  const uint8_t *iv, size_t iv_len,
+                                  const uint8_t *aad, size_t aad_len,
+                                  uint8_t *out, size_t out_cap, size_t *out_len) {
+    if ((NULL == plain) || (0u == plain_len) || (NULL == out) ||
+        (0u == out_cap) || (NULL == out_len)) {
+        return PICO_OPTIGA_EINVAL;
+    }
+    int rc = op_begin();
+    if (PICO_OPTIGA_OK != rc) {
+        return rc;
+    }
+    optiga_key_id_t key_id = (optiga_key_id_t)key_oid;
+    uint32_t out_len_u32 = (uint32_t)out_cap;
+    g_status = OPTIGA_LIB_BUSY;
+    rc = await_result(optiga_crypt_symmetric_encrypt(
+                          g_crypt, (optiga_symmetric_encryption_mode_t)mode,
+                          key_id, plain, (uint32_t)plain_len,
+                          iv, (uint16_t)iv_len, aad, (uint16_t)aad_len,
+                          out, &out_len_u32));
+    if (PICO_OPTIGA_OK == rc) {
+        *out_len = (size_t)out_len_u32;
+    }
+    op_end();
+    return rc;
+}
+
+int pico_optiga_symmetric_decrypt(pico_optiga_sym_mode_t mode, uint16_t key_oid,
+                                  const uint8_t *cipher, size_t cipher_len,
+                                  const uint8_t *iv, size_t iv_len,
+                                  const uint8_t *aad, size_t aad_len,
+                                  uint8_t *out, size_t out_cap, size_t *out_len) {
+    if ((NULL == cipher) || (0u == cipher_len) || (NULL == out) ||
+        (0u == out_cap) || (NULL == out_len)) {
+        return PICO_OPTIGA_EINVAL;
+    }
+    int rc = op_begin();
+    if (PICO_OPTIGA_OK != rc) {
+        return rc;
+    }
+    optiga_key_id_t key_id = (optiga_key_id_t)key_oid;
+    uint32_t out_len_u32 = (uint32_t)out_cap;
+    g_status = OPTIGA_LIB_BUSY;
+    rc = await_result(optiga_crypt_symmetric_decrypt(
+                          g_crypt, (optiga_symmetric_encryption_mode_t)mode,
+                          key_id, cipher, (uint32_t)cipher_len,
+                          iv, (uint16_t)iv_len, aad, (uint16_t)aad_len,
+                          out, &out_len_u32));
+    if (PICO_OPTIGA_OK == rc) {
+        *out_len = (size_t)out_len_u32;
+    }
+    op_end();
+    return rc;
+}
+
+/* Up-counter (e.g. the FIDO2 sync counter). Runs on g_util; a monotonic NVM
+ * increment — each call is a write, bounded by endurance. */
+int pico_optiga_counter_incr(uint16_t oid, uint8_t amount) {
+    if (0u == amount) {
+        return PICO_OPTIGA_EINVAL;
+    }
+    int rc = op_begin();
+    if (PICO_OPTIGA_OK != rc) {
+        return rc;
+    }
+    g_status = OPTIGA_LIB_BUSY;
+    rc = await_result(optiga_util_update_count(g_util, oid, amount));
+    op_end();
+    return rc;
+}
+
 int pico_optiga_get_info(pico_optiga_info_t *info) {
     if (NULL == info) {
         return PICO_OPTIGA_EINVAL;

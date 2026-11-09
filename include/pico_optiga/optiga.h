@@ -247,6 +247,88 @@ int pico_optiga_ecdsa_verify(const uint8_t *digest, size_t digest_len,
                              const uint8_t *pub, size_t pub_len,
                              uint8_t curve);
 
+/* ---------------------------------------------------------------------
+ * Crypto (KDF / agreement / hash / symmetric)
+ * ------------------------------------------------------------------- */
+
+/* The on-chip session secret (e.g. the result of an ECDH that kept its
+ * shared secret in the session). Pass as `secret` to pico_optiga_hkdf(). */
+#define PICO_OPTIGA_KEY_SESSION 0x0000u
+
+/* Symmetric (AES) modes for pico_optiga_symmetric_encrypt/decrypt(). The
+ * value is the vendor's optiga_symmetric_encryption_mode_t. NOTE: the chip
+ * offers ECB/CBC/CMAC — NOT CCM/GCM (those stay on the Pico). */
+typedef enum {
+    PICO_OPTIGA_SYM_ECB     = 0x08u,
+    PICO_OPTIGA_SYM_CBC     = 0x09u,
+    PICO_OPTIGA_SYM_CBC_MAC = 0x0Au,
+    PICO_OPTIGA_SYM_CMAC    = 0x0Bu,
+} pico_optiga_sym_mode_t;
+
+/*
+ * SHA-256 hashing offload: hash `data` (`len` bytes) on the chip and write
+ * the 32-byte digest to `out`. The Pico's hardware SHA-256 remains the
+ * default; this is for offload or cross-checking. The application must be
+ * open.
+ */
+int pico_optiga_sha256(const uint8_t *data, size_t len, uint8_t out[32]);
+
+/*
+ * ECDH key agreement: compute the shared secret of the on-chip private key
+ * in `oid` and the host-provided peer `pub` (`pub_len` bytes, the same
+ * format a keygen returns). If `out` is non-NULL (`out_cap` >= 32) the
+ * 32-byte secret is exported to it; if `out` is NULL the secret is kept in
+ * the chip's session (usable by a later pico_optiga_hkdf() with
+ * secret = PICO_OPTIGA_KEY_SESSION). The private key never leaves the chip.
+ * The application must be open.
+ */
+int pico_optiga_ecdh(uint16_t oid, const uint8_t *pub, size_t pub_len,
+                     uint8_t *out, size_t out_cap);
+
+/*
+ * HKDF-SHA256 key derivation: derive `out_len` bytes (1..32) from the
+ * on-chip `secret` — an ECC key OID (e.g. 0xE0F2) or PICO_OPTIGA_KEY_SESSION
+ * for the current ECDH session secret — with `salt` (`salt_len` bytes, may
+ * be NULL/0) and `info` (`info_len` bytes, may be NULL/0), into `out`. The
+ * secret never leaves the chip. The application must be open.
+ */
+int pico_optiga_hkdf(uint16_t secret, const uint8_t *salt, size_t salt_len,
+                     const uint8_t *info, size_t info_len,
+                     uint8_t *out, size_t out_len);
+
+/*
+ * Symmetric (AES) encrypt / decrypt offload. `mode` is a
+ * pico_optiga_sym_mode_t; the key is the on-chip symmetric key at `key_oid`
+ * (e.g. 0xE200 — it must be provisioned first). `iv` and `aad` are optional
+ * (NULL/0). The result is written to `out` (capacity `out_cap`) and its
+ * length returned in *out_len. The key never leaves the chip. The
+ * application must be open.
+ *
+ * NOTE: not exercised by the `crypt` example — it needs a symmetric key at a
+ * confirmed-open slot (0xE200 is not yet inventoried). See PLAN.md, Phase 6.
+ */
+int pico_optiga_symmetric_encrypt(pico_optiga_sym_mode_t mode, uint16_t key_oid,
+                                  const uint8_t *plain, size_t plain_len,
+                                  const uint8_t *iv, size_t iv_len,
+                                  const uint8_t *aad, size_t aad_len,
+                                  uint8_t *out, size_t out_cap, size_t *out_len);
+
+int pico_optiga_symmetric_decrypt(pico_optiga_sym_mode_t mode, uint16_t key_oid,
+                                  const uint8_t *cipher, size_t cipher_len,
+                                  const uint8_t *iv, size_t iv_len,
+                                  const uint8_t *aad, size_t aad_len,
+                                  uint8_t *out, size_t out_cap, size_t *out_len);
+
+/*
+ * Increment the on-chip up-counter at `oid` (e.g. 0xE120) by `amount`
+ * (1..255). A counter is monotonic (it only increases) — this is the FIDO2
+ * sync counter. Each increment is an NVM write (bounded by endurance, ~1e5),
+ * so keep the rate low. Read the current value with
+ * pico_optiga_read_data_obj() (a counter is a data object). The application
+ * must be open.
+ */
+int pico_optiga_counter_incr(uint16_t oid, uint8_t amount);
+
 #ifdef __cplusplus
 }
 #endif

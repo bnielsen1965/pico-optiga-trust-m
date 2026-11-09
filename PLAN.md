@@ -466,16 +466,28 @@ primitives. All vendor APIs below are confirmed present in
   - 0xE0F2 now holds a working on-chip P-256 private key (in service).
 
 ### Step 1b — Remaining primitives (only after 1a is bench-verified)
-- `pico_optiga_hkdf(...)` — wraps `optiga_crypt_hkdf` (the Vault's KDF).
-- `pico_optiga_ecdh(...)` — wraps `optiga_crypt_ecdh` (key agreement).
-- `pico_optiga_aes_ccm(...)` — wraps `optiga_crypt_symmetric_encrypt/decrypt`
-  (bulk-cipher offload; only if we later want the cipher on-chip).
-- `pico_optiga_sha256(...)` — wraps `optiga_crypt_hash` (hashing offload; the
-  Pico's hardware SHA-256 stays the default, this is optional).
-- `pico_optiga_counter_incr(oid, ...)` — wraps `optiga_util_update_count`
-  (up-counter; the FIDO2 sync counter).
-- **`crypt` example (part 2), bench-verified:** extend part 1 with an HKDF
-  derivation (print the derived bytes) and a counter increment + read-back.
+- `pico_optiga_hkdf(secret, salt, info, out, len)` — wraps
+  `optiga_crypt_hkdf` (HKDF-SHA256; the Vault's KDF). `secret` is an on-chip
+  OID or `PICO_OPTIGA_KEY_SESSION` (0x0000) for the ECDH session secret.
+- `pico_optiga_ecdh(oid, pub, pub_len, out, cap)` — wraps
+  `optiga_crypt_ecdh`. If `out` is set the 32-byte shared secret is exported;
+  if `out` is NULL it is kept in the chip session (then usable by HKDF).
+- `pico_optiga_sha256(data, len, out)` — wraps `optiga_crypt_hash` (SHA-256
+  offload; the Pico's HW SHA-256 stays the default).
+- `pico_optiga_symmetric_encrypt/decrypt(mode, key_oid, ...)` — wraps
+  `optiga_crypt_symmetric_encrypt/decrypt`. **NOTE: the chip's modes are
+  ECB/CBC/CMAC — there is NO CCM/GCM** (the plan's "aes_ccm" was a misread),
+  so the Vault's GCM stays on the Pico. Needs a symmetric key at a
+  confirmed-open slot (0xE200, not yet inventoried) — **not exercised** by the
+  example.
+- `pico_optiga_counter_incr(oid, amount)` — wraps `optiga_util_update_count`
+  (monotonic up-counter; the FIDO2 sync counter).
+- **`crypt` example (part 2):** extends part 1 with a chip-vs-Pico SHA-256
+  cross-check, ECDH (exported shared secret), ECDH→session→HKDF (derived key),
+  and a counter increment + read-back of 0xE120.
+- ✅ Built (five wrappers + extended `crypt` example, clean build). **Bench-
+  verify before Step 2.** Writes: keygen 0xE0F2 + one counter increment
+  0xE120 (both Step-0-confirmed open).
 
 ### Step 2 — Host tests
 - Extend `tests/` for any **pure-C** logic this phase introduces (e.g. COSE
