@@ -333,12 +333,41 @@ Design decisions made while implementing:
 
 ## Phase 5 — Examples on our library
 
-Each in `examples/<name>/`, flashable `.uf2`, stdio output:
+Each in `examples/<name>/`, flashable `.uf2`, stdio output. (`optiga_info`
+from the original list is subsumed by Phase 4's `optiga_hello`.)
 
-1. `optiga_info` — probe + print identity (the "it works" demo).
-2. `data_objects` — list/read/write a data object (e.g. the user-defined
-   storage area), demonstrating persistence across resets.
-3. `random` — pull 32 bytes of true random from the chip.
+**Safety model (agreed before any write):** data objects live in tamper-
+resistant NVM, so a write is *permanent* (survives power/reset) but a slot's
+*contents* can be rewritten many times (bounded only by NVM endurance). Two
+irreversible hazards must never be touched:
+
+1. **Life cycle state** (global LcsG `0xE0C0`, app LcsG `0xF1C0`, or any
+   object's LcsO / metadata tag `0xC0`). States are one-directional
+   (creation `0x01` → init `0x03` → operational `0x07` → **termination
+   `0x0F` = bricked**). We only ever *read* life cycle values.
+2. **Object metadata** (the access-condition tags `0xD0` Change / `0xD1`
+   Read / `0xD3` Execute). Setting Change → `NEV` freezes a slot forever.
+   `pico_optiga` deliberately exposes **no metadata-write API**.
+
+Writing a slot's *data* changes neither its LcsO nor its metadata — safe and
+repeatable. So the rule is: **read first, write only data, only to a slot
+confirmed open, a handful of writes max.**
+
+Steps:
+
+1. **`optiga_metadata` — read-only metadata inventory (Step 1).** Reads and
+   decodes each candidate object's TLV metadata (LcsO, Change/Read/Execute
+   AC, max/used size, data type) and prints a "safe scratch candidates"
+   summary: byte-string data + LcsO=creation + Change open. Pure reads —
+   nothing on the chip can change. Output is the map for picking the Step 2
+   target. *Do not assume a scratch OID a priori:* on some SLS32AIA units
+   `0xF1D0` ships as a locked Authorization Reference (Read=NEV), so the
+   inventory is what tells us which slots are actually open.
+2. **`data_objects` — write to a confirmed-open slot (Step 2).** Pick a slot
+   Step 1 marked safe. Write a small marker (erase-and-write), read it back,
+   reset the chip, read again → proves persistence. Data only; no metadata,
+   no life cycle.
+3. **`random` — pull 32 bytes of true random from the chip (Step 3).**
 
 ## Phase 6 — Optional extensions (decide per need)
 

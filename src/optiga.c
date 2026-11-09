@@ -365,6 +365,31 @@ int pico_optiga_write_data_obj(uint16_t oid, const uint8_t *buf,
     return rc;
 }
 
+/* Core metadata read; the caller holds the operation guard. */
+static int read_metadata_impl(uint16_t oid, uint8_t *buf, size_t len,
+                              size_t *out_len) {
+    uint16_t length = (uint16_t)len;
+    g_status = OPTIGA_LIB_BUSY;
+    int rc = await_result(optiga_util_read_metadata(g_util, oid, buf, &length));
+    *out_len = (PICO_OPTIGA_OK == rc) ? (size_t)length : 0u;
+    return rc;
+}
+
+int pico_optiga_read_metadata(uint16_t oid, uint8_t *buf, size_t len,
+                              size_t *out_len) {
+    if ((NULL == buf) || (0 == len) || (NULL == out_len) ||
+        (len > 0xFFFFu)) {
+        return PICO_OPTIGA_EINVAL;
+    }
+    int rc = op_begin();
+    if (PICO_OPTIGA_OK != rc) {
+        return rc;
+    }
+    rc = read_metadata_impl(oid, buf, len, out_len);
+    op_end();
+    return rc;
+}
+
 int pico_optiga_get_info(pico_optiga_info_t *info) {
     if (NULL == info) {
         return PICO_OPTIGA_EINVAL;

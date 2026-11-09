@@ -145,6 +145,21 @@ int pico_optiga_read_data_obj(uint16_t oid, uint8_t *buf, size_t len,
 int pico_optiga_write_data_obj(uint16_t oid, const uint8_t *buf,
                                size_t len);
 
+/*
+ * Read the TLV metadata of data object `oid` into `buf` (at most `len`
+ * bytes). *out_len receives the number of bytes read (0 on failure).
+ *
+ * The metadata describes the object's access conditions (Read/Change/
+ * Execute), its life cycle state (LcsO), and its max/used size. This is
+ * a pure read — it never modifies the chip. The application must be open.
+ *
+ * NOTE: writing metadata is a different, far more dangerous operation
+ * (it can lock an object's access conditions or advance its life cycle
+ * irreversibly). This library deliberately exposes no metadata-write API.
+ */
+int pico_optiga_read_metadata(uint16_t oid, uint8_t *buf, size_t len,
+                              size_t *out_len);
+
 #ifdef __cplusplus
 }
 #endif
