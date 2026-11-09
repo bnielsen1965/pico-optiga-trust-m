@@ -485,11 +485,12 @@ primitives. All vendor APIs below are confirmed present in
 - **`crypt` example (part 2):** extends part 1 with a chip-vs-Pico SHA-256
   cross-check, ECDH (exported shared secret), ECDH→session→HKDF (derived key),
   and a counter increment + read-back of 0xE120.
-- ✅ Built (five wrappers + extended `crypt` example, clean build). **Bench-
-  verify before Step 2.** Writes: keygen 0xE0F2 + counter init + one
-  increment of 0xE120 (all Step-0-confirmed open).
-- **Bench findings (1st run):** ECDSA + SHA-256 cross-check (chip==Pico)
-  PASS. ECDH and the counter failed with device errors; root-caused + fixed:
+- ✅ Built + **bench-verified**: full crypto tour passes — ECDSA round-trip,
+  SHA-256 cross-check (chip==Pico MATCH), ECDH (shared secret),
+  ECDH→session→HKDF (derived key), counter init+increment. Writes: keygen
+  0xE0F2 + counter init + one increment of 0xE120 (all Step-0-confirmed open).
+- **Bench findings (1st run):** ECDH and the counter failed with device
+  errors; root-caused + fixed:
   - **ECDH** needs the key's usage to include **KEY_AGREEMENT (0x20)** — the
     key was generated SIGN-only (0x10). Fix: keygen with
     `SIGN | KEY_AGREEMENT` (0x30). (Added `PICO_OPTIGA_USAGE_KEY_AGREEMENT`.)
@@ -497,7 +498,10 @@ primitives. All vendor APIs below are confirmed present in
     big-endian `[count:4][threshold:4]`) via `write_data` before
     `update_count` works — a zero threshold rejects every increment. Fix:
     init (count=0, threshold=10) then increment.
-  - 2nd bench run pending.
+- **Counter layout confirmed (2nd run):** big-endian `[count:4][threshold:4]`;
+  the count is bytes 0–3 (byte 3 ticked 00→01 on +1), threshold 0x0A intact.
+- **ECDH→session→HKDF confirmed:** the chip accepts deriving from the ECDH
+  session secret (the realistic KDF flow; no secret written to NVM).
 
 ### Step 2 — Host tests
 - Extend `tests/` for any **pure-C** logic this phase introduces (e.g. COSE
