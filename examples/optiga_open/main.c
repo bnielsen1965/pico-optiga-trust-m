@@ -7,8 +7,9 @@
  *
  * What happens inside optiga_util_open_application():
  *   1. the IFX stack's own reset state machine runs on GP22
- *      (RST low 2 s, high, 12 s startup — vendor constants,
- *      ifx_i2c_config.h);
+ *      (RST low 2 ms, high, 12 ms startup — vendor stock constants
+ *      from ifx_i2c_config.h; the vendor passes its "MSEC" values
+ *      straight into the microsecond event parameter);
  *   2. frame size and bitrate are negotiated over I2C (starting at
  *      100 kHz);
  *   3. the application is opened on the chip.
@@ -22,9 +23,9 @@
  *     }
  *
  * The open completes in well under a second: the reset sequence is a
- * 1 ms RST-low pulse + 25 ms startup (datasheet tSTARTUP = 15 ms, 20 ms
- * if NVM programming was pending; see the PICO PATCH in
- * ifx_i2c_config.h), then the IFX negotiation runs at 100 kHz.
+ * 2 ms RST-low pulse + 12 ms startup (stock vendor constants; the PL's
+ * NAK-retry loop absorbs 12 ms being 3 ms short of the datasheet
+ * tSTARTUP minimum), then the IFX negotiation runs at 100 kHz.
  */
 
 #include <pico/stdlib.h>
@@ -76,7 +77,7 @@ int main(void) {
 
     optiga_lib_status_t status;
 
-    printf("Opening application (1 ms RST + 25 ms startup, then IFX negotiation)...\n");
+    printf("Opening application (2 ms RST + 12 ms startup, then IFX negotiation)...\n");
     lib_status = OPTIGA_LIB_BUSY;
     status = optiga_util_open_application(util, 0);
     if (OPTIGA_LIB_SUCCESS == status) {

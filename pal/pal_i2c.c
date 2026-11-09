@@ -34,11 +34,13 @@
 #include "pal_i2c.h"
 
 // --- Bench trace ---------------------------------------------------------
-// Prints every I2C transaction so the IFX negotiation can be followed on
-// the serial console: which register is written/read, with what data, and
-// what the Pico SDK driver reported (rc >= 0: bytes transferred, 0: addr
-// ACKed/data NAKed, < 0: addr NAK/timeout). Low volume: a few lines per
-// negotiation step, one line per retry.
+// Optional (PICO_OPTIGA_PAL_TRACE=ON): prints every I2C transaction so
+// the IFX negotiation can be followed on the serial console: which
+// register is written/read, with what data, and what the Pico SDK driver
+// reported (rc >= 0: bytes transferred, 0: addr ACKed/data NAKed,
+// < 0: addr NAK/timeout). Off by default: a data-object read is several
+// transactions, which is too noisy for normal operation.
+#ifdef PICO_OPTIGA_PAL_TRACE
 static void trace_i2c(const char *op, const pal_i2c_t *p_i2c_context,
                       const uint8_t *p_data, uint16_t length, int rc) {
     printf("[I2C] %s @0x%02X %uB rc=%d", op, p_i2c_context->slave_address,
@@ -50,6 +52,7 @@ static void trace_i2c(const char *op, const pal_i2c_t *p_i2c_context,
     }
     printf("\n");
 }
+#endif  // PICO_OPTIGA_PAL_TRACE
 // --- end bench trace -----------------------------------------------------
 
 #define TRUSTM_I2C             i2c0
@@ -127,7 +130,9 @@ pal_status_t pal_i2c_write(const pal_i2c_t *p_i2c_context, uint8_t *p_data, uint
         int rc = i2c_write_blocking(
             i2c, (uint8_t)p_i2c_context->slave_address, p_data, length, false);
 
+#ifdef PICO_OPTIGA_PAL_TRACE
         trace_i2c("W", p_i2c_context, p_data, length, rc);
+#endif
         if (rc >= 0) {
             // rc > 0: fully acknowledged; rc == 0: address ACKed but the
             // data byte NAKed. Either way the chip answered its address,
@@ -167,7 +172,9 @@ pal_status_t pal_i2c_read(const pal_i2c_t *p_i2c_context, uint8_t *p_data, uint1
         int rc = i2c_read_blocking(
             i2c, (uint8_t)p_i2c_context->slave_address, p_data, length, false);
 
+#ifdef PICO_OPTIGA_PAL_TRACE
         trace_i2c("R", p_i2c_context, p_data, length, rc);
+#endif
         if (rc >= 0) {
             invoke_upper_layer_callback(gp_pal_i2c_current_ctx, PAL_I2C_EVENT_SUCCESS);
             status = PAL_STATUS_SUCCESS;
@@ -202,7 +209,9 @@ pal_status_t pal_i2c_set_bitrate(const pal_i2c_t *p_i2c_context, uint16_t bitrat
         }
         i2c_set_baudrate((i2c_inst_t *)p_i2c_context->p_i2c_hw_config,
                          (uint32_t)bitrate * 1000u);
+#ifdef PICO_OPTIGA_PAL_TRACE
         printf("[I2C] br %u kHz\n", (unsigned)bitrate);
+#endif
         return_status = PAL_STATUS_SUCCESS;
         event = PAL_I2C_EVENT_SUCCESS;
     } else {

@@ -208,14 +208,27 @@ the real Infineon stack.
   2. `optiga_util_open_application(me, 0)` — the IFX I2C open: negotiates
      frame size, sets up the protocol
   3. Read identity data objects:
-     - chip version
-     - serial number
-     - (optionally) the data-object list
+     - `0xE0C2` Coprocessor UID (27 bytes) — the chip's unique ID
+       plus firmware id (offset 21, uint32 LE) and ESW build
+       (offset 25, 2 bytes BCD). Field layout per the SRM table
+       "Coprocessor UID OPTIGA Trust M Family". Read AC = ALW.
+     - `0xE0C0` Global LcsG (1 byte; 0x07 = operational).
+     - Note: the 0x7001/0x7002 "chip version / serial number" OIDs
+       belong to the older OPTIGA TM05 / Trust (S) family. The
+       Trust M exposes identity via the 0xE0C0–0xE0C6 common
+       objects (confirmed in the SRM + datasheet Appendix B sample
+       log, which shows the exact wire sequence for the 0xE0C2 read).
   4. `optiga_util_close_application`
   5. Print everything over stdio
-- The Infineon API is **asynchronous** (returns `OPTIGA_LIB_BUSY` and completes
-  in the registered callback). Phase 3 needs a tiny synchronous wait loop
-  (poll a volatile status while `sleep_ms(1)`), exactly as the PAL template's
+- The Infineon API is **asynchronous with a quirk**: the util calls
+  return `OPTIGA_LIB_SUCCESS` to mean *"accepted, in flight"* (not
+  *"done"*) and complete later in the registered callback (see the
+  vendor's `WAIT_AND_CHECK_STATUS` macro: pump when the return is
+  SUCCESS). The instance stays locked until the completion callback
+  fires — the next API called too early fails with
+  `OPTIGA_UTIL_ERROR_INSTANCE_IN_USE` (0x0305). Phase 3 needs a tiny
+  synchronous wait loop (pump the one-shot chain while `sleep_ms(1)`
+  until the callback sets the status), exactly as the PAL template's
   init sample does. That loop becomes a proper helper in Phase 4.
 
 **Exit criteria:** `optiga_hello` prints the chip's version and serial number.

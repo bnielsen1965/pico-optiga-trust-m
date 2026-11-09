@@ -92,12 +92,14 @@ void pal_os_event_register_callback_oneshot(
     g_oneshot.args = callback_args;
     g_oneshot.deadline = make_timeout_time_us((uint64_t)time_us);
     g_oneshot.seq = ++g_oneshot_seq;
-    // Trace only the long waits (the 2 s / 12 s reset sequence); the
+#ifdef PICO_OPTIGA_PAL_TRACE
+    // Trace only the long waits (the 2 ms / 12 ms reset sequence); the
     // 50 us / 1 ms chain would overflow a 115200 baud console.
     g_oneshot.traced = (time_us > 1000u);
     if (g_oneshot.traced) {
         printf("[EVT] arm  #%u  %u us\n", (unsigned)g_oneshot.seq, (unsigned)time_us);
     }
+#endif
 }
 
 void pal_os_event_start(
@@ -129,9 +131,11 @@ void pal_os_event_trigger_registered_callback(void) {
         // Disarm before invoking: the callback re-arms the slot for the
         // next step of the state machine.
         g_oneshot.armed = FALSE;
+#ifdef PICO_OPTIGA_PAL_TRACE
         if (g_oneshot.traced) {
             printf("[EVT] fire #%u\n", (unsigned)g_oneshot.seq);
         }
+#endif
         register_callback callback = g_oneshot.callback;
         void *args = g_oneshot.args;
         callback(args);

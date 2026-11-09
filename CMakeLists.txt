@@ -74,6 +74,10 @@ option(PICO_OPTIGA_SHIELDED_CONNECTION
        "Enable the Infineon shielded (encrypted) I2C connection. Requires Mbed TLS 4.x plus a crypto PAL (pal_crypt_*). Off by default: plain IFX I2C is sufficient for basic use."
        OFF)
 
+option(PICO_OPTIGA_PAL_TRACE
+       "Enable the PAL bench trace on the serial console: [I2C] per transaction (register, data, driver result) and [EVT] for long one-shots. Off by default (too noisy in normal operation); turn on when debugging the IFX protocol."
+       OFF)
+
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 
@@ -162,6 +166,9 @@ if(PICO_OPTIGA_SOURCES)
     # hardware_i2c: the PAL (pal/pal_i2c.c) drives the SDK I2C driver.
     set(_pico_optiga_deps pico_stdlib hardware_i2c)
     target_link_libraries(pico_optiga PUBLIC ${_pico_optiga_deps})
+    if(PICO_OPTIGA_PAL_TRACE)
+        target_compile_definitions(pico_optiga PUBLIC PICO_OPTIGA_PAL_TRACE)
+    endif()
 endif()
 
 # ---------------------------------------------------------------------------
