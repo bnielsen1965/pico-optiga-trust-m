@@ -417,7 +417,7 @@ primitives. All vendor APIs below are confirmed present in
   applied to key objects). Pick the concrete OIDs Phase 6/7 will use.
 - Pure read. Bench-verify the inventory before any keygen.
 
-### Step 1 — Library crypto wrappers (over the confirmed vendor API)
+### Step 1a — ECDSA core (leaner first slice)
 - `pico_optiga_ecc_gen_keypair(oid, curve, usage, out_pub, out_pub_len)` —
   wraps `optiga_crypt_ecc_generate_keypair` with `export_private_key = FALSE`
   (private key written to the on-chip OID, **public key returned to host** —
@@ -428,25 +428,27 @@ primitives. All vendor APIs below are confirmed present in
 - `pico_optiga_ecdsa_verify(digest, digest_len, sig, sig_len, pub, pub_len)` —
   wraps `optiga_crypt_ecdsa_verify` with a host-supplied public key
   (`OPTIGA_CRYPT_HOST_DATA`).
-- `pico_optiga_hkdf(...)` — wraps `optiga_crypt_hkdf` (the Vault's KDF).
-- **Added later, when Phase 7 needs them:** `pico_optiga_ecdh`
-  (`optiga_crypt_ecdh`), `pico_optiga_aes_ccm`
-  (`optiga_crypt_symmetric_encrypt/decrypt`), `pico_optiga_sha256`
-  (`optiga_crypt_hash`), `pico_optiga_counter_incr`
-  (`optiga_util_update_count`).
+- **`crypt` example (part 1), bench-verified:** keygen a P-256 pair into an
+  open key OID and print the public key; SHA-256 a fixed message on the Pico,
+  `ecdsa_sign` the digest on-chip, then `ecdsa_verify` it (round-trip — must
+  pass).
 - All reuse the existing `g_status` / `op_begin`/`op_end` / pump machinery —
   module-agnostic, same as the `optiga_crypt_t` instance added in Phase 5
   Step 3. No new instance, no new event slot.
 
-### Step 2 — `crypt` example (bench-verified)
-- `optiga_crypt` example that: (a) keygens a P-256 pair into an open key OID
-  and prints the returned public key; (b) SHA-256-hashes a fixed message on
-  the Pico, `ecdsa_sign`s the digest on-chip, then `ecdsa_verify`s it (round
-  trip — must pass); (c) runs an HKDF derivation and prints the derived
-  bytes; (d) increments a counter OID (if one is open) and reads it back.
-- stdio output is the verification.
+### Step 1b — Remaining primitives (only after 1a is bench-verified)
+- `pico_optiga_hkdf(...)` — wraps `optiga_crypt_hkdf` (the Vault's KDF).
+- `pico_optiga_ecdh(...)` — wraps `optiga_crypt_ecdh` (key agreement).
+- `pico_optiga_aes_ccm(...)` — wraps `optiga_crypt_symmetric_encrypt/decrypt`
+  (bulk-cipher offload; only if we later want the cipher on-chip).
+- `pico_optiga_sha256(...)` — wraps `optiga_crypt_hash` (hashing offload; the
+  Pico's hardware SHA-256 stays the default, this is optional).
+- `pico_optiga_counter_incr(oid, ...)` — wraps `optiga_util_update_count`
+  (up-counter; the FIDO2 sync counter).
+- **`crypt` example (part 2), bench-verified:** extend part 1 with an HKDF
+  derivation (print the derived bytes) and a counter increment + read-back.
 
-### Step 3 — Host tests
+### Step 2 — Host tests
 - Extend `tests/` for any **pure-C** logic this phase introduces (e.g. COSE
   key encoding, signature/record framing). The chip calls themselves are
   bench-verified (they need the PAL + pico time); the status mapping is
@@ -473,6 +475,9 @@ signer and the Pico does bulk crypto + protocol, with two flagship
 applications. Phase 7 brings those two examples to this project, built on the
 Phase 6 crypto surface.
 
+**Sequencing:** all of Phase 6 (Steps 0, 1a, 1b, 2) is completed and
+bench-verified before any Phase 7 work begins.
+
 **Safety model (applies to every Phase 7 example):**
 - Use the factory-open key/data slots identified in Phase 6 Step 0.
 - Never advance lifecycle to termination; never write AC tags / metadata.
@@ -481,6 +486,15 @@ Phase 6 crypto surface.
 - **House-style startup contract** (copied from the reference): on boot,
   probe the chip and check the slots the app needs are present/open; if not,
   refuse to run and say why on stdio — never auto-provision.
+
+> **Prerequisite — audit the existing littlefs partition before any Phase 7
+> write.** The Pico flash still carries the littlefs partition left over from
+> the `pico-atecc608` development. Both Vault and FIDO2 will use littlefs, so
+> before we touch that partition we must inspect it and **preserve the
+> Protected I/O key** (the I/O-protection key, e.g. `/io_key.bin`): it is bound
+> to the specific provisioned chip and must follow that chip. It is believed to
+> be recorded in a document — confirm it is present and correct before any
+> partition change.
 
 ### 7.1 — Vault (PIN-gated password store)
 - **Chip = key master.** A stored master secret; each unlock derives a
@@ -492,9 +506,13 @@ Phase 6 crypto surface.
   host-testable) + littlefs storage (one fixed-size file per entry:
   magic + salt + GCM nonce + ct + tag + CRC-32, with the entry name bound as
   GCM AAD) + a console (list / add / get / dump / rm).
-- **Design choice (decide at build time):** AES-256-GCM on the Pico (portable,
-  host-testable, matches the reference — **lean this way**) vs AES-128-CCM on
-  the chip (offloads the cipher, OPTIGA-specific, via `pico_optiga_aes_ccm`).
+- **Cipher (decided):** AES-256-GCM on the Pico — portable, host-testable,
+  matches the reference. GCM and CCM are both AEAD of comparable strength; the
+  win with 256 over 128 is the key size / security margin (AES-128 is already
+  fully secure classically, but 256-bit stays ~128-bit even under Grover, where
+  128-bit drops to ~64) — the conservative, future-proof choice. AES-128-CCM on
+  the chip remains available later via `pico_optiga_aes_ccm` if we ever want to
+  offload the cipher.
 - Sub-steps: (a) littlefs + GCM bring-up (host-test the GCM against NIST
   vectors); (b) KDF master + add/get; (c) full console (dump/rm).
 
