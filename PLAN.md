@@ -412,10 +412,14 @@ primitives. All vendor APIs below are confirmed present in
 
 ### Step 0 — Read-first ECC key-slot + counter inventory (no writes)
 - Extend the Step-1 metadata inventory (`optiga_metadata`) to report, for the
-  ECC key OIDs and the counter OIDs: lifecycle state, capacity, Change/Read
-  AC, and a "safe keygen target?" verdict (the Phase-5 safe-scratch heuristic,
-  applied to key objects). Pick the concrete OIDs Phase 6/7 will use.
-- Pure read. Bench-verify the inventory before any keygen.
+  ECC key OIDs (0xE0F0-F3) and a counter candidate (0xE120): lifecycle state,
+  capacity, Change/Read/Exec AC, raw 0xE8 type, and a "safe keygen target?"
+  verdict. Pick the concrete OIDs Phase 6/7 will use.
+- **Safe keygen target** = ECC key OID, not terminated, and Change AC *already*
+  open now — so keygen needs no metadata (AC-tag) write. (The vendor's own
+  keygen sample writes the Change AC to ALW first; we must not, so an
+  already-open Change AC is required.)
+- Pure read. ✅ Built (bench-verify the inventory before any keygen).
 
 ### Step 1a — ECDSA core (leaner first slice)
 - `pico_optiga_ecc_gen_keypair(oid, curve, usage, out_pub, out_pub_len)` —

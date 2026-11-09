@@ -1,9 +1,10 @@
 /*
- * optiga_metadata — Phase 5, Step 1: read-only metadata inventory
+ * optiga_metadata — Phase 5 Step 1 + Phase 6 Step 0: read-only metadata
+ * inventory
  *
- * Purpose: before we write anything to the chip (Step 2), find out exactly
- * where it stands. For a set of candidate data objects this reads and
- * decodes each object's TLV metadata:
+ * Purpose: before we write anything to the chip, find out exactly where it
+ * stands. For a set of candidate objects this reads and decodes each
+ * object's TLV metadata:
  *
  *   - LcsO            the object's life cycle state (0x01 creation …
  *                     0x0F termination). Read-only here — we never write it.
@@ -11,11 +12,15 @@
  *   - max / used size
  *   - data type       (byte-string data vs. key / cert / secret / counter)
  *
- * It then prints a "safe scratch candidates" summary: objects whose
- * Change AC is open (ALW, or LcsO < X while the object is below X) AND
- * whose data type is plain byte-string data AND whose LcsO is creation.
- * Those are the slots Step 2 may write to without touching any lock or
- * life-cycle state.
+ * It then prints two summaries:
+ *   - "safe scratch candidates" (Phase 5 Step 1): objects whose Change AC
+ *     is open (ALW, or LcsO < X while the object is below X) AND whose data
+ *     type is plain byte-string data AND whose LcsO is creation — the slots
+ *     Step 2 may write to without touching any lock or life-cycle state.
+ *   - "safe keygen targets" (Phase 6 Step 0): ECC key OIDs (0xE0F0-F3) whose
+ *     Change AC is ALREADY open now, so a keygen needs no metadata (AC-tag)
+ *     write. The vendor's own keygen sample writes the Change AC to ALW
+ *     first; we must NOT do that, so we only use OIDs already writable.
  *
  * SAFETY — this example is strictly read-only. It calls no metadata-write
  * and no life-cycle API. The two irreversible hazards on this chip are:
@@ -167,11 +172,25 @@ static const char *lcs_name(uint8_t v) {
     }
 }
 
+/* Name for a known 0xE8 data-object type, or NULL if unknown (the caller
+ * then prints the raw value, so an unfamiliar key/counter type is visible). */
 static const char *dtype_name(uint8_t v) {
     switch (v) {
     case DTYPE_BYTE_STRING: return "data";
     case DTYPE_UP_COUNTER:  return "counter";
-    default:                return "other";
+    default:                return NULL;
+    }
+}
+
+/* Render the Type column: a name for known types, the raw 0xE8 value for
+ * unknown ones, or "-" when the object carries no 0xE8 tag. */
+static void dtype_label(uint8_t v, int have, char *out, size_t n) {
+    if (!have) {
+        snprintf(out, n, "-");
+    } else if (dtype_name(v) != NULL) {
+        snprintf(out, n, "%s", dtype_name(v));
+    } else {
+        snprintf(out, n, "0x%02X", (unsigned)v);
     }
 }
 
@@ -204,34 +223,57 @@ static int is_safe_scratch(const meta_t *m) {
            && ac_writable_now(&m->change, m->lcso);
 }
 
+/*
+ * Is this a safe keygen target for Phase 6 (1a)? An ECC key OID (0xE0F0-F3)
+ * whose life cycle is not terminated and whose Change AC is ALREADY open now
+ * — so optiga_crypt_ecc_generate_keypair() can write the key WITHOUT us
+ * issuing any metadata (AC-tag) write. The vendor's sample opens the Change
+ * AC to ALW first; we must not, so an already-open Change AC is required.
+ * (The public key is returned by the keygen call itself, so the Read AC is
+ * not a gate.)
+ */
+static int is_safe_keygen_target(uint16_t oid, const meta_t *m) {
+    int is_ecc_key = (oid >= 0xE0F0u) && (oid <= 0xE0F3u);
+    return is_ecc_key
+           && m->valid
+           && m->have_lcso && (m->lcso != LCS_TERMINATION)
+           && ac_writable_now(&m->change, m->lcso);
+}
+
 static void print_hex(const uint8_t *buf, size_t len) {
     for (size_t i = 0; i < len; i++) {
         printf("%02X ", (unsigned)buf[i]);
     }
 }
 
-/* Candidate objects to inventory. The 0xF1Dx/0xF1Ex ranges are the
- * arbitrary-data (scratch) slots; the 0xE0Ex/0xE0Fx are commonly cited
- * open test slots; the rest are life-cycle / identity references. */
+/* Candidate objects to inventory. 0xE0F0-F3 are the ECC key objects (the
+ * keygen targets for Phase 6 Step 0); 0xE0FC-FD are the RSA key objects;
+ * 0xE120 is the vendor's counter-example OID (a counter candidate); the
+ * 0xF1Dx/0xF1Ex ranges are arbitrary-data (scratch) slots; the rest are
+ * life-cycle / identity references. */
 static const struct {
     uint16_t oid;
     const char *name;
 } kCandidates[] = {
-    { 0xE0C0u, "Global LcsG"   },
-    { 0xE0C2u, "Coproc UID"    },
-    { 0xF1C0u, "App LcsG"      },
-    { 0xF1C1u, "Security Stat" },
-    { 0xE0E8u, "E0E8"          },
-    { 0xE0F2u, "E0F2"          },
-    { 0xE0F3u, "E0F3"          },
-    { 0xE0FDu, "E0FD"          },
-    { 0xF1D0u, "ArbData3 #0"   },
-    { 0xF1D1u, "ArbData3 #1"   },
-    { 0xF1D2u, "ArbData3 #2"   },
-    { 0xF1D3u, "ArbData3 #3"   },
-    { 0xF1D4u, "F1D4"          },
-    { 0xF1E0u, "ArbData2 #0"   },
-    { 0xF1E1u, "ArbData2 #1"   },
+    { 0xE0C0u, "Global LcsG"  },
+    { 0xE0C2u, "Coproc UID"   },
+    { 0xF1C0u, "App LcsG"     },
+    { 0xF1C1u, "Security Stat"},
+    { 0xE0E8u, "E0E8"         },
+    { 0xE0F0u, "ECC key 0"    },
+    { 0xE0F1u, "ECC key 1"    },
+    { 0xE0F2u, "ECC key 2"    },
+    { 0xE0F3u, "ECC key 3"    },
+    { 0xE0FCu, "RSA key 0"    },
+    { 0xE0FDu, "RSA key 1"    },
+    { 0xE120u, "counter cand" },
+    { 0xF1D0u, "ArbData3 #0"  },
+    { 0xF1D1u, "ArbData3 #1"  },
+    { 0xF1D2u, "ArbData3 #2"  },
+    { 0xF1D3u, "ArbData3 #3"  },
+    { 0xF1D4u, "F1D4"         },
+    { 0xF1E0u, "ArbData2 #0"  },
+    { 0xF1E1u, "ArbData2 #1"  },
 };
 
 #define N_CANDIDATES (sizeof(kCandidates) / sizeof(kCandidates[0]))
@@ -268,7 +310,7 @@ int main(void) {
     printf("--------------------------------------------------------------------"
            "------------------\n");
 
-    meta_t meta[N_CANDIDATES];
+    meta_t meta[N_CANDIDATES] = {0};  /* zero-init: a failed read stays invalid */
     uint8_t raw[256];
 
     int safe_count = 0;
@@ -293,7 +335,9 @@ int main(void) {
         printf("%-13s ", m->have_lcso ? lcs_name(m->lcso) : "-");
         printf("%-4u ", m->have_max ? (unsigned)m->max_size : 0u);
         printf("%-4u ", m->have_used ? (unsigned)m->used_size : 0u);
-        printf("%-7s ", m->have_dtype ? dtype_name(m->dtype) : "-");
+        char dt[8];
+        dtype_label(m->dtype, m->have_dtype, dt, sizeof(dt));
+        printf("%-7s ", dt);
         printf("%-13s ", m->change.str[0] ? m->change.str : "-");
         printf("%-13s ", m->read.str[0] ? m->read.str : "-");
         printf("%-9s\n", m->exec.str[0] ? m->exec.str : "-");
@@ -320,6 +364,32 @@ int main(void) {
                        m->have_max ? (unsigned)m->max_size : 0u,
                        m->have_used ? (unsigned)m->used_size : 0u,
                        m->change.str);
+            }
+        }
+    }
+
+    /* Actionable summary for Phase 6 Step 0. */
+    printf("Safe keygen targets (ECC key OID 0xE0F0-F3, not terminated, "
+           "Change AC already open — no metadata write needed):\n");
+    int keygen_count = 0;
+    for (size_t i = 0; i < N_CANDIDATES; i++) {
+        if (is_safe_keygen_target(kCandidates[i].oid, &meta[i])) {
+            keygen_count++;
+        }
+    }
+    if (keygen_count == 0) {
+        printf("  (none found — do NOT keygen; every ECC key OID would need a "
+               "Change-AC metadata write, which we do not perform. Inspect the "
+               "table above and confirm the intended OID + its Change AC.)\n");
+    } else {
+        for (size_t i = 0; i < N_CANDIDATES; i++) {
+            if (is_safe_keygen_target(kCandidates[i].oid, &meta[i])) {
+                const meta_t *m = &meta[i];
+                printf("  0x%04X  %-13s  (LcsO=%s, Change %s, Read %s)\n",
+                       (unsigned)kCandidates[i].oid, kCandidates[i].name,
+                       m->have_lcso ? lcs_name(m->lcso) : "-",
+                       m->change.str[0] ? m->change.str : "-",
+                       m->read.str[0] ? m->read.str : "-");
             }
         }
     }
