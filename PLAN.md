@@ -442,13 +442,22 @@ primitives. All vendor APIs below are confirmed present in
 - `pico_optiga_ecdsa_verify(digest, digest_len, sig, sig_len, pub, pub_len)` —
   wraps `optiga_crypt_ecdsa_verify` with a host-supplied public key
   (`OPTIGA_CRYPT_HOST_DATA`).
-- **`crypt` example (part 1), bench-verified:** keygen a P-256 pair into an
-  open key OID and print the public key; SHA-256 a fixed message on the Pico,
-  `ecdsa_sign` the digest on-chip, then `ecdsa_verify` it (round-trip — must
-  pass).
+- **`crypt` example (part 1):** keygen a P-256 pair into **0xE0F2** (the
+  confirmed-safe target) and print the public key; SHA-256 a fixed message on
+  the Pico, `ecdsa_sign` the digest on-chip, then `ecdsa_verify` it
+  (round-trip — must pass). Plus a **negative test**: corrupt one signature
+  byte and confirm verify rejects it.
+- The Pico-side SHA-256 is a small, portable, self-contained implementation in
+  the example (no hardware dep, host-testable). It **self-checks against two
+  NIST vectors** at startup and aborts on mismatch, so it can never sign a
+  wrong digest. (Verified natively against the full 4-vector NIST set, incl.
+  the 56-byte and 896-byte multi-block cases.)
 - All reuse the existing `g_status` / `op_begin`/`op_end` / pump machinery —
   module-agnostic, same as the `optiga_crypt_t` instance added in Phase 5
   Step 3. No new instance, no new event slot.
+- ✅ Built (keygen/sign/verify wrappers + `crypt` example, clean build).
+  **Bench-verify the round-trip before proceeding to 1b.** This is the first
+  key write to the chip (0xE0F2, a confirmed-open creation slot).
 
 ### Step 1b — Remaining primitives (only after 1a is bench-verified)
 - `pico_optiga_hkdf(...)` — wraps `optiga_crypt_hkdf` (the Vault's KDF).

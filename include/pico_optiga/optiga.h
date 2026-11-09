@@ -196,6 +196,57 @@ int pico_optiga_read_metadata(uint16_t oid, uint8_t *buf, size_t len,
  */
 int pico_optiga_get_random(uint8_t *buf, size_t len);
 
+/* ---------------------------------------------------------------------
+ * Crypto (ECC / ECDSA)
+ * ------------------------------------------------------------------- */
+
+/* ECC curves for pico_optiga_ecc_gen_keypair() / pico_optiga_ecdsa_verify().
+ * The value is the vendor's optiga_ecc_curve_t; this project needs P-256. */
+#define PICO_OPTIGA_CURVE_P256  0x03u  /* NIST P-256 (secp256r1) */
+
+/* Key usage for pico_optiga_ecc_gen_keypair(). The value is the vendor's
+ * optiga_key_usage_t. */
+#define PICO_OPTIGA_USAGE_SIGN  0x10u  /* private key may sign (ECDSA) */
+
+/*
+ * Generate an ECC key pair on the chip into key object `oid` (e.g. 0xE0F2).
+ * `curve` is the curve (PICO_OPTIGA_CURVE_P256); `usage` the key usage
+ * (PICO_OPTIGA_USAGE_SIGN). The PRIVATE key stays on the chip (never
+ * exported); the PUBLIC key is written into `pub` (at most `pub_cap` bytes)
+ * and its actual length returned in *out_pub_len.
+ *
+ * This writes key material to a slot's intended purpose and may advance the
+ * slot's life cycle creation -> operational (the normal "in service" state).
+ * It does NOT write metadata/access conditions and never moves toward
+ * termination. `oid` must be a key object whose Change AC is already open
+ * (see the metadata inventory). The application must be open.
+ */
+int pico_optiga_ecc_gen_keypair(uint16_t oid, uint8_t curve, uint8_t usage,
+                                uint8_t *pub, size_t pub_cap, size_t *out_pub_len);
+
+/*
+ * Sign a message digest on the chip with the private key in `oid`. `digest`
+ * (`digest_len` bytes, e.g. a 32-byte SHA-256) is signed and the
+ * DER-encoded ECDSA signature is written into `sig` (at most `sig_cap`
+ * bytes); its length is returned in *out_sig_len. The private key never
+ * leaves the chip. The application must be open.
+ */
+int pico_optiga_ecdsa_sign(uint16_t oid, const uint8_t *digest,
+                           size_t digest_len, uint8_t *sig, size_t sig_cap,
+                           size_t *out_sig_len);
+
+/*
+ * Verify a DER-encoded ECDSA `sig` (`sig_len` bytes) over `digest`
+ * (`digest_len` bytes) using the host-provided ECC `pub` (`pub_len` bytes —
+ * the same key a keygen returned). `curve` is the curve
+ * (PICO_OPTIGA_CURVE_P256). Returns PICO_OPTIGA_OK if the signature is valid,
+ * a PICO_OPTIGA_E* code if it is not. The application must be open.
+ */
+int pico_optiga_ecdsa_verify(const uint8_t *digest, size_t digest_len,
+                             const uint8_t *sig, size_t sig_len,
+                             const uint8_t *pub, size_t pub_len,
+                             uint8_t curve);
+
 #ifdef __cplusplus
 }
 #endif

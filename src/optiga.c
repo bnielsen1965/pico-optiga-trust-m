@@ -426,6 +426,92 @@ int pico_optiga_get_random(uint8_t *buf, size_t len) {
     return rc;
 }
 
+/* ---------------------------------------------------------------------
+ * Crypto (ECC / ECDSA)
+ * ------------------------------------------------------------------- */
+
+/*
+ * Keygen / sign / verify all run on g_crypt, which shares the same
+ * optiga_cmd scheduler and one-shot event slot as g_util (see op_callback).
+ * The private key is always kept on the chip (export_private_key = FALSE);
+ * only the public key and signatures cross to the host.
+ */
+int pico_optiga_ecc_gen_keypair(uint16_t oid, uint8_t curve, uint8_t usage,
+                                uint8_t *pub, size_t pub_cap,
+                                size_t *out_pub_len) {
+    if ((NULL == pub) || (0u == pub_cap) || (NULL == out_pub_len) ||
+        (pub_cap > 0xFFFFu)) {
+        return PICO_OPTIGA_EINVAL;
+    }
+    int rc = op_begin();
+    if (PICO_OPTIGA_OK != rc) {
+        return rc;
+    }
+    optiga_key_id_t key_id = (optiga_key_id_t)oid;
+    uint16_t pub_len = (uint16_t)pub_cap;
+    g_status = OPTIGA_LIB_BUSY;
+    rc = await_result(optiga_crypt_ecc_generate_keypair(g_crypt,
+                                                        (optiga_ecc_curve_t)curve,
+                                                        usage, FALSE, &key_id,
+                                                        pub, &pub_len));
+    if (PICO_OPTIGA_OK == rc) {
+        *out_pub_len = (size_t)pub_len;
+    }
+    op_end();
+    return rc;
+}
+
+int pico_optiga_ecdsa_sign(uint16_t oid, const uint8_t *digest,
+                           size_t digest_len, uint8_t *sig, size_t sig_cap,
+                           size_t *out_sig_len) {
+    if ((NULL == digest) || (0u == digest_len) || (digest_len > 0xFFu) ||
+        (NULL == sig) || (0u == sig_cap) || (NULL == out_sig_len) ||
+        (sig_cap > 0xFFFFu)) {
+        return PICO_OPTIGA_EINVAL;
+    }
+    int rc = op_begin();
+    if (PICO_OPTIGA_OK != rc) {
+        return rc;
+    }
+    optiga_key_id_t key_id = (optiga_key_id_t)oid;
+    uint16_t sig_len = (uint16_t)sig_cap;
+    g_status = OPTIGA_LIB_BUSY;
+    rc = await_result(optiga_crypt_ecdsa_sign(g_crypt, digest,
+                                              (uint8_t)digest_len, key_id,
+                                              sig, &sig_len));
+    if (PICO_OPTIGA_OK == rc) {
+        *out_sig_len = (size_t)sig_len;
+    }
+    op_end();
+    return rc;
+}
+
+int pico_optiga_ecdsa_verify(const uint8_t *digest, size_t digest_len,
+                             const uint8_t *sig, size_t sig_len,
+                             const uint8_t *pub, size_t pub_len,
+                             uint8_t curve) {
+    if ((NULL == digest) || (0u == digest_len) || (digest_len > 0xFFu) ||
+        (NULL == sig) || (0u == sig_len) || (sig_len > 0xFFFFu) ||
+        (NULL == pub) || (0u == pub_len) || (pub_len > 0xFFFFu)) {
+        return PICO_OPTIGA_EINVAL;
+    }
+    int rc = op_begin();
+    if (PICO_OPTIGA_OK != rc) {
+        return rc;
+    }
+    public_key_from_host_t pk;
+    pk.public_key = (uint8_t *)pub;  /* verify only reads the key */
+    pk.length = (uint16_t)pub_len;
+    pk.key_type = curve;
+    g_status = OPTIGA_LIB_BUSY;
+    rc = await_result(optiga_crypt_ecdsa_verify(g_crypt, digest,
+                                                (uint8_t)digest_len, sig,
+                                                (uint16_t)sig_len,
+                                                OPTIGA_CRYPT_HOST_DATA, &pk));
+    op_end();
+    return rc;
+}
+
 int pico_optiga_get_info(pico_optiga_info_t *info) {
     if (NULL == info) {
         return PICO_OPTIGA_EINVAL;
