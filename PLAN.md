@@ -455,9 +455,15 @@ primitives. All vendor APIs below are confirmed present in
 - All reuse the existing `g_status` / `op_begin`/`op_end` / pump machinery —
   module-agnostic, same as the `optiga_crypt_t` instance added in Phase 5
   Step 3. No new instance, no new event slot.
-- ✅ Built (keygen/sign/verify wrappers + `crypt` example, clean build).
-  **Bench-verify the round-trip before proceeding to 1b.** This is the first
-  key write to the chip (0xE0F2, a confirmed-open creation slot).
+- ✅ Built + **bench-verified**: keygen P-256 into 0xE0F2 → sign → verify
+  round-trip PASSES; corrupted signature correctly REJECTED (verify is real).
+- **Bench format notes (for Phase 7 FIDO2):**
+  - Public key = 68 bytes, OPTIGA native: `[0x03 curve][0x42 len=66][0x00]
+    [0x04 ‖ X(32) ‖ Y(32)]`. The raw point X‖Y (64 B) is bytes 4..68 —
+    extractable for the FIDO2 COSE public key.
+  - Signature = DER (70 B here: r,s each 33 B with a leading 0x00). FIDO2/
+    CTAP2 wants raw 64-byte r‖s, so a DER→raw conversion is needed in Phase 7.
+  - 0xE0F2 now holds a working on-chip P-256 private key (in service).
 
 ### Step 1b — Remaining primitives (only after 1a is bench-verified)
 - `pico_optiga_hkdf(...)` — wraps `optiga_crypt_hkdf` (the Vault's KDF).
