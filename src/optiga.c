@@ -581,6 +581,29 @@ int pico_optiga_hkdf(uint16_t secret, const uint8_t *salt, size_t salt_len,
     return rc;
 }
 
+int pico_optiga_symmetric_generate_key(uint16_t oid, uint8_t key_type,
+                                       uint8_t usage, int export_key,
+                                       uint8_t *out, size_t out_len) {
+    if ((export_key && ((NULL == out) || (0u == out_len))) ||
+        (out_len > 0xFFFFu)) {
+        return PICO_OPTIGA_EINVAL;
+    }
+    int rc = op_begin();
+    if (PICO_OPTIGA_OK != rc) {
+        return rc;
+    }
+    /* When export_key is FALSE the vendor API returns the generated key's OID
+     * through this pointer; when TRUE it receives the exported key bytes. */
+    optiga_key_id_t key_id = (optiga_key_id_t)oid;
+    g_status = OPTIGA_LIB_BUSY;
+    rc = await_result(optiga_crypt_symmetric_generate_key(
+                          g_crypt, (optiga_symmetric_key_type_t)key_type, usage,
+                          (export_key ? TRUE : FALSE),
+                          export_key ? (void *)out : (void *)&key_id));
+    op_end();
+    return rc;
+}
+
 int pico_optiga_symmetric_encrypt(pico_optiga_sym_mode_t mode, uint16_t key_oid,
                                   const uint8_t *plain, size_t plain_len,
                                   const uint8_t *iv, size_t iv_len,

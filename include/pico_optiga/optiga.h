@@ -204,9 +204,11 @@ int pico_optiga_get_random(uint8_t *buf, size_t len);
  * The value is the vendor's optiga_ecc_curve_t; this project needs P-256. */
 #define PICO_OPTIGA_CURVE_P256  0x03u  /* NIST P-256 (secp256r1) */
 
-/* Key usage for pico_optiga_ecc_gen_keypair(). The value is the vendor's
- * optiga_key_usage_t; combine with | for multiple usages. A key's usage is
- * fixed at keygen time — e.g. ECDH needs KEY_AGREEMENT, ECDSA needs SIGN. */
+/* Key usage for pico_optiga_ecc_gen_keypair() / pico_optiga_symmetric_generate_key().
+ * The value is the vendor's optiga_key_usage_t; combine with | for multiple
+ * usages. A key's usage is fixed at keygen time — e.g. ECDH needs
+ * KEY_AGREEMENT, ECDSA needs SIGN, a symmetric AES key needs ENCRYPTION. */
+#define PICO_OPTIGA_USAGE_ENCRYPTION  0x02u  /* symmetric key may encrypt/decrypt */
 #define PICO_OPTIGA_USAGE_SIGN  0x10u  /* private key may sign (ECDSA) */
 #define PICO_OPTIGA_USAGE_KEY_AGREEMENT  0x20u  /* private key may do ECDH */
 
@@ -257,6 +259,10 @@ int pico_optiga_ecdsa_verify(const uint8_t *digest, size_t digest_len,
  * shared secret in the session). Pass as `secret` to pico_optiga_hkdf(). */
 #define PICO_OPTIGA_KEY_SESSION 0x0000u
 
+/* Symmetric key type for pico_optiga_symmetric_generate_key(). The value is
+ * the vendor's optiga_symmetric_key_type_t. */
+#define PICO_OPTIGA_SYM_AES_256  0x83u  /* AES-256 */
+
 /* Symmetric (AES) modes for pico_optiga_symmetric_encrypt/decrypt(). The
  * value is the vendor's optiga_symmetric_encryption_mode_t. NOTE: the chip
  * offers ECB/CBC/CMAC — NOT CCM/GCM (those stay on the Pico). */
@@ -297,6 +303,23 @@ int pico_optiga_ecdh(uint16_t oid, const uint8_t *pub, size_t pub_len,
 int pico_optiga_hkdf(uint16_t secret, const uint8_t *salt, size_t salt_len,
                      const uint8_t *info, size_t info_len,
                      uint8_t *out, size_t out_len);
+
+/*
+ * Symmetric key generation: have the chip generate a random symmetric key of
+ * `key_type` (e.g. OPTIGA_SYMMETRIC_AES_256) with `usage` (e.g.
+ * OPTIGA_KEY_USAGE_ENCRYPTION) and store it in the on-chip key store at `oid`
+ * (e.g. 0xE200). If `export_key` is non-zero the key bytes are written to
+ * `out` (`out_len` bytes); for a master key keep it 0 so the key never leaves
+ * the chip. The application must be open.
+ *
+ * NOTE: whether this succeeds depends on the slot's metadata. On a slot whose
+ * Change AC is NEV the vendor's flow (a metadata write first) is not possible,
+ * so this can fail — the `sym_keygen_probe` example tests exactly this on
+ * 0xE200 before the Vault relies on it.
+ */
+int pico_optiga_symmetric_generate_key(uint16_t oid, uint8_t key_type,
+                                       uint8_t usage, int export_key,
+                                       uint8_t *out, size_t out_len);
 
 /*
  * Symmetric (AES) encrypt / decrypt offload. `mode` is a
