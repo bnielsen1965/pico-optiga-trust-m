@@ -29,6 +29,23 @@ else()
 endif()
 
 # ---------------------------------------------------------------------------
+# Output location: keep every example's .uf2/.elf/.hex/.bin in the top-level
+# build dir (build/<preset>/), not build/<preset>/examples/. The targets live
+# in this subdirectory scope, so without this CMake would emit them under
+# examples/ and the flash path (build/<preset>/<name>.uf2) would silently
+# serve a stale file.
+#
+# Two vars are needed because the SDK splits the outputs:
+#   * CMAKE_RUNTIME_OUTPUT_DIRECTORY  -> the .elf (and .bin/.hex/.map/dis)
+#   * CMAKE_ARCHIVE_OUTPUT_DIRECTORY  -> the .uf2: pico_add_uf2_output() in
+#     the SDK reads the target's ARCHIVE_OUTPUT_DIRECTORY to place the .uf2,
+#     falling back to CMAKE_CURRENT_BINARY_DIR (= examples/) if unset.
+# Setting both to the top-level build dir keeps the flash path stable.
+# ---------------------------------------------------------------------------
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
+set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
+
+# ---------------------------------------------------------------------------
 # Example discovery: every <name>/main.c under examples/ becomes a .uf2.
 # (The pico-littlefs submodule dir has no main.c, so it is skipped.)
 # ---------------------------------------------------------------------------
