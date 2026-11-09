@@ -26,5 +26,12 @@ target_include_directories(test_optiga_status PRIVATE
     "${PICO_OPTIGA_SRC}/src"
     "${PICO_OPTIGA_SRC}/third_party/optiga-trust-m/include/common")
 
+# Portable SHA-256 (header-only) — no other sources needed.
+add_executable(test_sha256
+    test_sha256.c)
+target_include_directories(test_sha256 PRIVATE
+    "${PICO_OPTIGA_SRC}/include")
+
 enable_testing()
 add_test(NAME status_mapping COMMAND test_optiga_status)
+add_test(NAME sha256 COMMAND test_sha256)

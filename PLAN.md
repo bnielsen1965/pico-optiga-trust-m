@@ -503,11 +503,17 @@ primitives. All vendor APIs below are confirmed present in
 - **ECDH→session→HKDF confirmed:** the chip accepts deriving from the ECDH
   session secret (the realistic KDF flow; no secret written to NVM).
 
-### Step 2 — Host tests
-- Extend `tests/` for any **pure-C** logic this phase introduces (e.g. COSE
-  key encoding, signature/record framing). The chip calls themselves are
-  bench-verified (they need the PAL + pico time); the status mapping is
-  already host-tested.
+### Step 2 — Host tests ✅
+- The one pure-C piece Phase 6 introduced is the Pico-side **SHA-256**
+  (used to form the digest the chip signs + to cross-check the chip's own
+  SHA-256). Extracted from `examples/crypt/main.c` into a shared, header-only
+  module `include/pico_optiga/sha256.h` (single source of truth; reusable by
+  the Phase 7 FIDO2 example). The example now `#include`s it.
+- **`tests/test_sha256.c`** verifies it against the NIST FIPS 180-4 vector
+  set: empty, "abc", the 56-byte string, and 1,000,000 × 'a' (multi-block).
+  Both host tests pass (`ctest`).
+- The chip calls themselves remain bench-verified (they need the PAL + pico
+  time); the status mapping was already host-tested.
 
 ### Deferred (other optional extensions — decide per need)
 - **Shielded connection** (encrypted I2C): define
