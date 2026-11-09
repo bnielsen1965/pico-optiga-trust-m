@@ -173,12 +173,30 @@ if(PICO_OPTIGA_SOURCES)
 endif()
 
 # ---------------------------------------------------------------------------
+# pico-littlefs (third_party/pico-littlefs) — Pico-side littlefs for the
+# Phase 7 examples (Vault / FIDO2) and the read-only fs_audit. The bare-metal
+# default volume is at flash 0x80000 (384 x 4 KB = 1.5 MB), matching the
+# layout the sibling pico-atecc608 project already wrote to this flash. Added
+# once; only the examples that need it link it (_pico_optiga_lfs_examples).
+# ---------------------------------------------------------------------------
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/pico-littlefs/CMakeLists.txt")
+    add_subdirectory(third_party/pico-littlefs)
+else()
+    message(WARNING
+        "pico-littlefs not found at third_party/pico-littlefs.\n"
+        "Run:  git submodule update --init --recursive third_party/pico-littlefs")
+endif()
+
+# ---------------------------------------------------------------------------
 # Examples: every examples/<name>/main.c becomes a flashable .uf2
 #
 # Stdio goes over UART0 (CP210x USB-serial bridge on the bench), not the
 # Pico's native USB port.
 # ---------------------------------------------------------------------------
 if(PICO_OPTIGA_BUILD_EXAMPLES)
+    # Examples that link pico-littlefs: the read-only fs_audit plus the Phase
+    # 7 apps. A list so adding an app is a one-line change.
+    set(_pico_optiga_lfs_examples fs_audit vault fido2)
     file(GLOB _example_dirs "${CMAKE_CURRENT_SOURCE_DIR}/examples/*")
     foreach(_dir IN LISTS _example_dirs)
         if(IS_DIRECTORY "${_dir}" AND EXISTS "${_dir}/main.c")
@@ -196,6 +214,10 @@ if(PICO_OPTIGA_BUILD_EXAMPLES)
                      "-Wl,--start-group;optiga_trust_m;pico_optiga;-Wl,--end-group")
             elseif(TARGET pico_optiga)
                 list(APPEND _example_deps pico_optiga)
+            endif()
+            # Phase 7 examples (and the read-only fs_audit) persist to littlefs.
+            if(_name IN_LIST _pico_optiga_lfs_examples AND TARGET pico-littlefs)
+                list(APPEND _example_deps pico-littlefs)
             endif()
             target_link_libraries(${_name} PRIVATE ${_example_deps})
             pico_enable_stdio_uart(${_name} 1)

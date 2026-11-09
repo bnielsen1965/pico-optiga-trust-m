@@ -1,3 +1,6 @@
 [submodule "third_party/optiga-trust-m"]
 	path = third_party/optiga-trust-m
 	url = https://github.com/Infineon/optiga-trust-m.git
+[submodule "third_party/pico-littlefs"]
+	path = third_party/pico-littlefs
+	url = https://github.com/bnielsen1965/pico-littlefs.git
