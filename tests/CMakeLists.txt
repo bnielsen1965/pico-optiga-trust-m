@@ -32,6 +32,15 @@ add_executable(test_sha256
 target_include_directories(test_sha256 PRIVATE
     "${PICO_OPTIGA_SRC}/include")
 
+# Vault AES-256-GCM (pure C, NIST-verified) — the source under test lives in
+# the vault example (it is chip-agnostic, so it compiles identically on host).
+add_executable(test_vault_gcm
+    test_vault_gcm.c
+    "${PICO_OPTIGA_SRC}/examples/vault/vault_gcm.c")
+target_include_directories(test_vault_gcm PRIVATE
+    "${PICO_OPTIGA_SRC}/examples/vault")
+
 enable_testing()
 add_test(NAME status_mapping COMMAND test_optiga_status)
 add_test(NAME sha256 COMMAND test_sha256)
+add_test(NAME vault_gcm COMMAND test_vault_gcm)
