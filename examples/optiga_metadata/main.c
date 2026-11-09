@@ -21,6 +21,9 @@
  *     Change AC is ALREADY open now, so a keygen needs no metadata (AC-tag)
  *     write. The vendor's own keygen sample writes the Change AC to ALW
  *     first; we must NOT do that, so we only use OIDs already writable.
+ *   - "safe symmetric keygen targets" (Phase 7.1 Vault): symmetric key OIDs
+ *     (0xE200-03) with the same property — the home for the Vault's on-chip
+ *     AES-256 master key.
  *
  * SAFETY — this example is strictly read-only. It calls no metadata-write
  * and no life-cycle API. The two irreversible hazards on this chip are:
@@ -240,6 +243,23 @@ static int is_safe_keygen_target(uint16_t oid, const meta_t *m) {
            && ac_writable_now(&m->change, m->lcso);
 }
 
+/*
+ * Is this a safe symmetric-keygen target for Phase 7.1 (the Vault master)?
+ * A symmetric key OID (0xE200-03) whose life cycle is not terminated and
+ * whose Change AC is ALREADY open now — so optiga_crypt_symmetric_generate_key()
+ * can write the AES key WITHOUT us issuing any metadata (AC-tag) write. The
+ * vendor's sample sets the Change AC to ALW first; we must not, so an
+ * already-open Change AC is required. (The Vault then uses the key as HKDF
+ * IKM; the table prints the Exec AC so we can confirm key-use is open too.)
+ */
+static int is_safe_sym_keygen_target(uint16_t oid, const meta_t *m) {
+    int is_sym_key = (oid >= 0xE200u) && (oid <= 0xE203u);
+    return is_sym_key
+           && m->valid
+           && m->have_lcso && (m->lcso != LCS_TERMINATION)
+           && ac_writable_now(&m->change, m->lcso);
+}
+
 static void print_hex(const uint8_t *buf, size_t len) {
     for (size_t i = 0; i < len; i++) {
         printf("%02X ", (unsigned)buf[i]);
@@ -266,6 +286,10 @@ static const struct {
     { 0xE0F3u, "ECC key 3"    },
     { 0xE0FCu, "RSA key 0"    },
     { 0xE0FDu, "RSA key 1"    },
+    { 0xE200u, "Sym key 0"    },
+    { 0xE201u, "Sym key 1"    },
+    { 0xE202u, "Sym key 2"    },
+    { 0xE203u, "Sym key 3"    },
     { 0xE120u, "counter cand" },
     { 0xF1D0u, "ArbData3 #0"  },
     { 0xF1D1u, "ArbData3 #1"  },
@@ -390,6 +414,33 @@ int main(void) {
                        m->have_lcso ? lcs_name(m->lcso) : "-",
                        m->change.str[0] ? m->change.str : "-",
                        m->read.str[0] ? m->read.str : "-");
+            }
+        }
+    }
+
+    /* Actionable summary for Phase 7.1 (the Vault master key). */
+    printf("Safe symmetric keygen targets (Sym key OID 0xE200-03, not "
+           "terminated, Change AC already open — no metadata write needed):\n");
+    int sym_keygen_count = 0;
+    for (size_t i = 0; i < N_CANDIDATES; i++) {
+        if (is_safe_sym_keygen_target(kCandidates[i].oid, &meta[i])) {
+            sym_keygen_count++;
+        }
+    }
+    if (sym_keygen_count == 0) {
+        printf("  (none found — do NOT keygen a symmetric master; every Sym key "
+               "OID would need a Change-AC metadata write, which we do not "
+               "perform. Inspect the table above and confirm the intended OID "
+               "+ its Change/Exec AC.)\n");
+    } else {
+        for (size_t i = 0; i < N_CANDIDATES; i++) {
+            if (is_safe_sym_keygen_target(kCandidates[i].oid, &meta[i])) {
+                const meta_t *m = &meta[i];
+                printf("  0x%04X  %-13s  (LcsO=%s, Change %s, Exec %s)\n",
+                       (unsigned)kCandidates[i].oid, kCandidates[i].name,
+                       m->have_lcso ? lcs_name(m->lcso) : "-",
+                       m->change.str[0] ? m->change.str : "-",
+                       m->exec.str[0] ? m->exec.str : "-");
             }
         }
     }
