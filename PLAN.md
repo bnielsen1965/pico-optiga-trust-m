@@ -153,8 +153,10 @@ Design notes (decisions made while porting):
 - **Link order:** the *stack* calls *into* the PAL, so `liboptiga_trust_m.a`
   must precede `libpico_optiga.a` on the final link line (single-pass
   archive resolution). `pico_optiga` therefore takes the vendor include
-  dirs directly (not via a link dependency), and examples link
-  `optiga_trust_m pico_optiga` in that order.
+  dirs directly (not via a link dependency). *Superseded in Phase 4:*
+  once `pico_optiga` itself calls into the stack (`optiga_util_*`), the
+  two archives depend on each other and no single-pass order works —
+  examples now link them in a `--start-group`/`--end-group` link group.
 - **Vendor config selection:** the vendor default config
   (`optiga_lib_config_m_v3.h`) defines `OPTIGA_COMMS_SHIELDED_CONNECTION`,
   which pulls in the crypto PAL (`pal_crypt_*`, Mbed TLS). We select
@@ -235,7 +237,7 @@ the real Infineon stack.
 A `0x107` here would confirm a pre-paired chip → go to the unlock path in
 Open questions.
 
-## Phase 4 — The `pico_optiga` library
+## Phase 4 — The `pico_optiga` library — **done (build + native test verified; bench verification pending)**
 
 Design and implement the stable API applications will use. Header in
 `include/pico_optiga/optiga.h`, implementation in `src/`.
@@ -276,6 +278,50 @@ Design rules:
 **Exit criteria:** `optiga_hello` re-written against `pico_optiga` with ~10
 lines of app code; unit-testable logic (status mapping, timeouts) factored so
 it can be exercised natively later.
+
+**Outcome (build + native test verified; bench verification pending):**
+`optiga_hello` is now ~15 lines of app code (`init` → `get_info` → print →
+`deinit`) and the whole IFX protocol is hidden inside the library.
+
+Files:
+- `include/pico_optiga/optiga.h` — the public surface (lifecycle,
+  diagnostics, data objects, flat `int` errors + `pico_optiga_strerror`).
+- `src/optiga.c` — synchronous wrapper: RST bring-up + warm reset, I2C0 on
+  GP20/21, one static `optiga_util_t`, a timeout-bounded pump
+  (`OPTIGA_OP_TIMEOUT_MS` = 2 s) around each async call, a
+  `critical_section` re-entrancy guard, and the raw registry `probe()`.
+- `src/optiga_status.{c,h}` — the vendor `optiga_lib_status_t` →
+  `PICO_OPTIGA_E*` mapping, factored as a pure function.
+- `tests/` — a standalone host CMake project (the main build is
+  cross-compiled, so it cannot host a native target) with a plain-assert
+  unit test for the status mapping.
+
+Design decisions made while implementing:
+- **`pico_optiga_init` opens the application** (not just brings up the
+  hardware), so a successful init means `get_info`/`read_data_obj` work
+  immediately. On an open failure the instance stays created so
+  `probe()` (wiring check) and `deinit()` remain usable — the hello app
+  prints a hint when init fails but the probe succeeds.
+- **`deinit` only attempts the close when the open completed**, so a
+  timed-out open is not stacked with a close command on a locked instance.
+- **The circular archive dependency is real now:** `pico_optiga` calls
+  `optiga_util_*` (into the stack) and the stack calls `pal_*` (into
+  `pico_optiga`). No single-pass order resolves both, so examples link the
+  pair inside `--start-group`/`--end-group` (see the Phase 2 note).
+- **pico-sdk 2.x critical-section API:** `critical_section_enter` no
+  exists — it is `critical_section_enter_blocking`, and the section must
+  be `critical_section_init`-ed before first use (done in
+  `pico_optiga_init`). The guard's check-and-set is atomic; the pump
+  itself is *not* held under the section (it blocks up to the timeout).
+- **Sync-wait testability:** the status mapping is a pure function
+  (native-tested). The pump/timeout loop stays target-side — it needs the
+  PAL event pump and pico time, so it is verified on the bench, not
+  natively.
+
+**To bench-verify:** flash `build/pico2-local/optiga_hello.uf2`, expect
+`init: OK`, the decoded identity (lifecycle 0x07, CIM/platform/model,
+firmware id, ESW build, 27-byte UID), then `done`. A `0x0107` here would
+surface as `PICO_OPTIGA_EHANDSHAKE` → pre-paired chip → Open questions.
 
 ## Phase 5 — Examples on our library
 
@@ -339,7 +385,9 @@ In rough order of likely value:
 - Phase 2 gets a native Linux smoke build of the Infineon lib + Pico PAL
   stubs (via the upstream `test_pal` pattern) to catch type/signature slips
   before flashing.
-- Phase 4 adds native-compiled unit tests for the status mapping and the
-  sync-wait helper.
+- Phase 4 adds native-compiled unit tests for the status mapping
+  (done — `tests/`, plain-assert, standalone host CMake project). The
+  sync-wait/pump loop needs the PAL + pico time, so it is verified on the
+  bench rather than natively.
 - Keep the Infineon submodule pinned; bump deliberately (its API is stable
   but the mbedtls dependency churns between branches).

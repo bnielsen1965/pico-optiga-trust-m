@@ -134,9 +134,10 @@ endif()
 # ---------------------------------------------------------------------------
 # pico_optiga - this project's library (grows across the phases in PLAN.md)
 #
-# Currently a placeholder: it has no sources until Phase 2 (PAL port) and
-# Phase 4 (stable public API). The target is only created once sources exist
-# so the skeleton configures and builds cleanly in the meantime.
+# src/ holds the public API (Phase 4), pal/ the Pico port of the Infineon
+# PAL (Phase 2). Both go into the same archive: the stack calls into the
+# PAL, and the API calls into the stack, so consumers link the pair in a
+# --start-group/--end-group link group (see the examples section).
 # ---------------------------------------------------------------------------
 file(GLOB PICO_OPTIGA_SOURCES CONFIGURE_DEPENDS
      "${CMAKE_CURRENT_SOURCE_DIR}/src/*.c"
@@ -184,13 +185,16 @@ if(PICO_OPTIGA_BUILD_EXAMPLES)
             get_filename_component(_name "${_dir}" NAME)
             add_executable(${_name} "${_dir}/main.c")
             set(_example_deps pico_stdlib hardware_i2c)
-            # Link order matters (single-pass archive resolution): the
-            # Infineon stack calls into the PAL, so optiga_trust_m must
-            # precede pico_optiga on the link line.
-            if(TARGET optiga_trust_m)
-                list(APPEND _example_deps optiga_trust_m)
-            endif()
-            if(TARGET pico_optiga)
+            # The Infineon stack calls into the PAL (pico_optiga), and
+            # since Phase 4 pico_optiga calls into the stack
+            # (optiga_util_*) — a circular archive dependency that
+            # single-pass archive resolution cannot satisfy in either
+            # order, so both go into a --start-group/--end-group link
+            # group.
+            if(TARGET optiga_trust_m AND TARGET pico_optiga)
+                list(APPEND _example_deps
+                     "-Wl,--start-group;optiga_trust_m;pico_optiga;-Wl,--end-group")
+            elseif(TARGET pico_optiga)
                 list(APPEND _example_deps pico_optiga)
             endif()
             target_link_libraries(${_name} PRIVATE ${_example_deps})
