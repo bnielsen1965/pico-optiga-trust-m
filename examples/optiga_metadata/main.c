@@ -106,15 +106,12 @@ static void decode_ac(const uint8_t *val, uint8_t len, ac_t *ac) {
     } else if ((len == 3u) && (val[1] == 0xFCu)) {
         ac->kind = AC_LCSO_LT;
         ac->threshold = val[2];
-        snprintf(ac->str, sizeof(ac->str), "LcsO<0x%02X", (unsigned)val[2]);
+        snprintf(ac->str, sizeof(ac->str), "LcsO<%02X", (unsigned)val[2]);
     } else {
+        /* Conf()/Auto() combo — needs a shielded connection to satisfy, so it
+         * is effectively "not usable by us". Shown compactly as CONF*. */
         ac->kind = AC_COMPLEX;
-        size_t off = 0;
-        for (uint8_t i = 0; (i < len) && (off + 3u < sizeof(ac->str)); i++) {
-            off += (size_t)snprintf(ac->str + off, sizeof(ac->str) - off,
-                                    "%02X ", (unsigned)val[i]);
-        }
-        ac->str[sizeof(ac->str) - 1u] = '\0';
+        snprintf(ac->str, sizeof(ac->str), "CONF*");
     }
 }
 
@@ -274,30 +271,31 @@ static void print_hex(const uint8_t *buf, size_t len) {
 static const struct {
     uint16_t oid;
     const char *name;
+    const char *group;  /* for section headers in the table */
 } kCandidates[] = {
-    { 0xE0C0u, "Global LcsG"  },
-    { 0xE0C2u, "Coproc UID"   },
-    { 0xF1C0u, "App LcsG"     },
-    { 0xF1C1u, "Security Stat"},
-    { 0xE0E8u, "E0E8"         },
-    { 0xE0F0u, "ECC key 0"    },
-    { 0xE0F1u, "ECC key 1"    },
-    { 0xE0F2u, "ECC key 2"    },
-    { 0xE0F3u, "ECC key 3"    },
-    { 0xE0FCu, "RSA key 0"    },
-    { 0xE0FDu, "RSA key 1"    },
-    { 0xE200u, "Sym key 0"    },
-    { 0xE201u, "Sym key 1"    },
-    { 0xE202u, "Sym key 2"    },
-    { 0xE203u, "Sym key 3"    },
-    { 0xE120u, "counter cand" },
-    { 0xF1D0u, "ArbData3 #0"  },
-    { 0xF1D1u, "ArbData3 #1"  },
-    { 0xF1D2u, "ArbData3 #2"  },
-    { 0xF1D3u, "ArbData3 #3"  },
-    { 0xF1D4u, "F1D4"         },
-    { 0xF1E0u, "ArbData2 #0"  },
-    { 0xF1E1u, "ArbData2 #1"  },
+    { 0xE0C0u, "Global LcsG",   "identity / lifecycle" },
+    { 0xE0C2u, "Coproc UID",    "identity / lifecycle" },
+    { 0xF1C0u, "App LcsG",      "identity / lifecycle" },
+    { 0xF1C1u, "Security Stat", "identity / lifecycle" },
+    { 0xE0E8u, "E0E8",          "identity / lifecycle" },
+    { 0xE0F0u, "ECC key 0",     "ECC keys" },
+    { 0xE0F1u, "ECC key 1",     "ECC keys" },
+    { 0xE0F2u, "ECC key 2",     "ECC keys" },
+    { 0xE0F3u, "ECC key 3",     "ECC keys" },
+    { 0xE0FCu, "RSA key 0",     "RSA keys" },
+    { 0xE0FDu, "RSA key 1",     "RSA keys" },
+    { 0xE200u, "Sym key 0",     "symmetric keys" },
+    { 0xE201u, "Sym key 1",     "symmetric keys" },
+    { 0xE202u, "Sym key 2",     "symmetric keys" },
+    { 0xE203u, "Sym key 3",     "symmetric keys" },
+    { 0xE120u, "counter",       "counter" },
+    { 0xF1D0u, "ArbData3 #0",   "arbitrary data (scratch)" },
+    { 0xF1D1u, "ArbData3 #1",   "arbitrary data (scratch)" },
+    { 0xF1D2u, "ArbData3 #2",   "arbitrary data (scratch)" },
+    { 0xF1D3u, "ArbData3 #3",   "arbitrary data (scratch)" },
+    { 0xF1D4u, "ArbData3 #4",   "arbitrary data (scratch)" },
+    { 0xF1E0u, "ArbData2 #0",   "arbitrary data (scratch)" },
+    { 0xF1E1u, "ArbData2 #1",   "arbitrary data (scratch)" },
 };
 
 #define N_CANDIDATES (sizeof(kCandidates) / sizeof(kCandidates[0]))
@@ -329,42 +327,60 @@ int main(void) {
     printf("\n");
 
     /* Metadata table. */
-    printf("%-6s  %-13s %-4s %-4s %-7s  %-13s %-13s %-9s\n",
-           "OID", "LcsO", "Max", "Used", "Type", "Change", "Read", "Exec");
-    printf("--------------------------------------------------------------------"
-           "------------------\n");
+    printf("Legend:\n");
+    printf("  LcsO  creation(01) -> init(03) -> operational(07) -> termination(0F); one-way\n");
+    printf("  AC    ALW=always  NEV=never(locked)  LcsO<NN=allowed while LcsO<NN  CONF*=complex\n");
+    printf("        Change=may re-lock this object's ACs/LcsO | Read=may read | Exec=may use\n");
+    printf("  [W]   Change AC is open NOW -> data write / keygen possible, no metadata write\n\n");
+
+    printf("%-6s %-13s %-11s %-3s %-3s %-6s %-11s %-5s %-5s\n",
+           "OID", "Name", "LcsO", "Max", "Used", "Type", "Change", "Read", "Exec");
+    printf("---------------------------------------------------------------------\n");
 
     meta_t meta[N_CANDIDATES] = {0};  /* zero-init: a failed read stays invalid */
     uint8_t raw[256];
 
     int safe_count = 0;
+    const char *last_group = "";
     for (size_t i = 0; i < N_CANDIDATES; i++) {
         uint16_t oid = kCandidates[i].oid;
+        if (0 != strcmp(kCandidates[i].group, last_group)) {
+            printf("  -- %s --\n", kCandidates[i].group);
+            last_group = kCandidates[i].group;
+        }
         n = 0;
         rc = pico_optiga_read_metadata(oid, raw, sizeof(raw), &n);
         if (PICO_OPTIGA_OK != rc) {
-            printf("0x%04X  %-13s  (metadata read failed: %s)\n",
+            printf("0x%04X %-13s  (metadata read failed: %s)\n",
                    (unsigned)oid, kCandidates[i].name,
                    pico_optiga_strerror(rc));
             continue;
         }
         if (0 != parse_metadata(raw, n, &meta[i])) {
-            printf("0x%04X  %-13s  (metadata parse failed, %u bytes)\n",
+            printf("0x%04X %-13s  (metadata parse failed, %u bytes)\n",
                    (unsigned)oid, kCandidates[i].name, (unsigned)n);
             continue;
         }
 
         const meta_t *m = &meta[i];
-        printf("0x%04X  ", (unsigned)oid);
-        printf("%-13s ", m->have_lcso ? lcs_name(m->lcso) : "-");
-        printf("%-4u ", m->have_max ? (unsigned)m->max_size : 0u);
-        printf("%-4u ", m->have_used ? (unsigned)m->used_size : 0u);
         char dt[8];
         dtype_label(m->dtype, m->have_dtype, dt, sizeof(dt));
-        printf("%-7s ", dt);
-        printf("%-13s ", m->change.str[0] ? m->change.str : "-");
-        printf("%-13s ", m->read.str[0] ? m->read.str : "-");
-        printf("%-9s\n", m->exec.str[0] ? m->exec.str : "-");
+        char chg[16];
+        if (ac_writable_now(&m->change, m->lcso)) {
+            snprintf(chg, sizeof(chg), "%s [W]",
+                     m->change.str[0] ? m->change.str : "-");
+        } else {
+            snprintf(chg, sizeof(chg), "%s",
+                     m->change.str[0] ? m->change.str : "-");
+        }
+        printf("0x%04X %-13s %-11s %-3u %-3u %-6s %-11s %-5s %-5s\n",
+               (unsigned)oid, kCandidates[i].name,
+               m->have_lcso ? lcs_name(m->lcso) : "-",
+               m->have_max ? (unsigned)m->max_size : 0u,
+               m->have_used ? (unsigned)m->used_size : 0u,
+               dt, chg,
+               m->read.str[0] ? m->read.str : "-",
+               m->exec.str[0] ? m->exec.str : "-");
 
         if (is_safe_scratch(m)) {
             safe_count++;
