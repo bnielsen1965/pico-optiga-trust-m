@@ -393,26 +393,143 @@ Steps:
 `random` (hardware TRNG). The `pico_optiga` data-object + random surface is
 done and stable.
 
-## Phase 6 — Optional extensions (decide per need)
+## Phase 6 — Crypto offload (foundation for the application examples)
 
-In rough order of likely value:
+The core reason to have a Trust M: keep keys on-chip and do the crypto there.
+Scoped from the sibling **`pico-atecc608`** project (see the reference note at
+the end of Phase 7), whose Vault and FIDO2 examples both rest on exactly these
+primitives. All vendor APIs below are confirmed present in
+`third_party/optiga-trust-m/include/optiga_crypt.h` (+ `optiga_util.h`).
 
-1. **Crypto offload**: AES-128 CCM, ECDSA (P-256) sign/verify, ECC keygen —
-   the core reason to have a Trust M. Straightforward `pico_optiga_*`
-   wrappers over `optiga_crypt`.
-2. **Shielded connection** (encrypted I2C): define
-   `OPTIGA_COMMS_SHIELDED_CONNECTION`, bring in Mbed TLS 4.x (the submodule
-   `external/mbedtls-4.x` in the Infineon repo) + `pal_crypt_psa.c`, pair the
-   chip (upstream `example_pair_host_and_optiga_using_pre_shared_secret.c`),
-   store the shared secret via `pal_os_datastore` (move it from RAM to flash
-   — pico-sdk flash or littlefs — at that point).
-3. **Power management**: hibernate/wake of the chip (`optiga_util` close/open
-   application), sleep current reduction.
-4. **FreeRTOS**: if an app needs it — the PAL lock/event files already have
-   the seams; nothing in the plan blocks this.
-5. **Native (host) test build**: compile `pico_optiga`'s logic + the Infineon
-   library with the upstream `test_pal` on Linux for CI, with the Pico PAL
-   excluded.
+> **Safety model (carried over from Phase 5).** Read the metadata first, act
+> only on confirmed-open slots, and never write lifecycle or AC tags. Keygen
+> is the one write this phase performs, and it is gated on a read-first
+> inventory (Step 0). We do **not** build a "provisioner": the ATECC's
+> write-config-then-lock flow has no safe equivalent here, because the OPTIGA
+> has no config zone — "locking" an object means advancing its lifecycle /
+> writing AC tags, which is the class of write we avoid (termination bricks
+> it). The examples use the factory-open slots and leave them as-is.
+
+### Step 0 — Read-first ECC key-slot + counter inventory (no writes)
+- Extend the Step-1 metadata inventory (`optiga_metadata`) to report, for the
+  ECC key OIDs and the counter OIDs: lifecycle state, capacity, Change/Read
+  AC, and a "safe keygen target?" verdict (the Phase-5 safe-scratch heuristic,
+  applied to key objects). Pick the concrete OIDs Phase 6/7 will use.
+- Pure read. Bench-verify the inventory before any keygen.
+
+### Step 1 — Library crypto wrappers (over the confirmed vendor API)
+- `pico_optiga_ecc_gen_keypair(oid, curve, usage, out_pub, out_pub_len)` —
+  wraps `optiga_crypt_ecc_generate_keypair` with `export_private_key = FALSE`
+  (private key written to the on-chip OID, **public key returned to host** —
+  the exact FIDO2/identity pattern).
+- `pico_optiga_ecdsa_sign(oid, digest, digest_len, out_sig, out_sig_len)` —
+  wraps `optiga_crypt_ecdsa_sign` (external-digest mode: the Pico hashes, the
+  chip signs the 32-byte digest).
+- `pico_optiga_ecdsa_verify(digest, digest_len, sig, sig_len, pub, pub_len)` —
+  wraps `optiga_crypt_ecdsa_verify` with a host-supplied public key
+  (`OPTIGA_CRYPT_HOST_DATA`).
+- `pico_optiga_hkdf(...)` — wraps `optiga_crypt_hkdf` (the Vault's KDF).
+- **Added later, when Phase 7 needs them:** `pico_optiga_ecdh`
+  (`optiga_crypt_ecdh`), `pico_optiga_aes_ccm`
+  (`optiga_crypt_symmetric_encrypt/decrypt`), `pico_optiga_sha256`
+  (`optiga_crypt_hash`), `pico_optiga_counter_incr`
+  (`optiga_util_update_count`).
+- All reuse the existing `g_status` / `op_begin`/`op_end` / pump machinery —
+  module-agnostic, same as the `optiga_crypt_t` instance added in Phase 5
+  Step 3. No new instance, no new event slot.
+
+### Step 2 — `crypt` example (bench-verified)
+- `optiga_crypt` example that: (a) keygens a P-256 pair into an open key OID
+  and prints the returned public key; (b) SHA-256-hashes a fixed message on
+  the Pico, `ecdsa_sign`s the digest on-chip, then `ecdsa_verify`s it (round
+  trip — must pass); (c) runs an HKDF derivation and prints the derived
+  bytes; (d) increments a counter OID (if one is open) and reads it back.
+- stdio output is the verification.
+
+### Step 3 — Host tests
+- Extend `tests/` for any **pure-C** logic this phase introduces (e.g. COSE
+  key encoding, signature/record framing). The chip calls themselves are
+  bench-verified (they need the PAL + pico time); the status mapping is
+  already host-tested.
+
+### Deferred (other optional extensions — decide per need)
+- **Shielded connection** (encrypted I2C): define
+  `OPTIGA_COMMS_SHIELDED_CONNECTION`, bring in Mbed TLS 4.x (the submodule
+  `external/mbedtls-4.x` in the Infineon repo) + `pal_crypt_psa.c`, pair the
+  chip (upstream `example_pair_host_and_optiga_using_pre_shared_secret.c`),
+  store the shared secret via `pal_os_datastore` (move it from RAM to flash
+  — pico-sdk flash or littlefs — at that point). Big lift; the chip works
+  fine in plain IFX, so defer.
+- **Power management**: hibernate/wake of the chip (`optiga_util` close/open
+  application), sleep current reduction. Only for battery apps.
+- **FreeRTOS**: if an app needs it — the PAL lock/event files already have
+  the seams; nothing in the plan blocks this.
+
+## Phase 7 — Application examples (mirroring `pico-atecc608`)
+
+The `pico-atecc608` sibling project makes the end goal concrete: a
+**secure-element application platform** where the chip is the key vault +
+signer and the Pico does bulk crypto + protocol, with two flagship
+applications. Phase 7 brings those two examples to this project, built on the
+Phase 6 crypto surface.
+
+**Safety model (applies to every Phase 7 example):**
+- Use the factory-open key/data slots identified in Phase 6 Step 0.
+- Never advance lifecycle to termination; never write AC tags / metadata.
+- No "provisioner" example (no safe config-zone-lock equivalent on the
+  OPTIGA).
+- **House-style startup contract** (copied from the reference): on boot,
+  probe the chip and check the slots the app needs are present/open; if not,
+  refuse to run and say why on stdio — never auto-provision.
+
+### 7.1 — Vault (PIN-gated password store)
+- **Chip = key master.** A stored master secret; each unlock derives a
+  per-entry key via HKDF over `salt ‖ PIN` (the ATECC's `kdf_prf` analog).
+  The master secret and the derived key never appear on the bus in a form the
+  app doesn't control.
+- **Pico = bulk cipher + storage + console.** AES-256-GCM (port the
+  ATECC project's NIST-vector-verified pure-C GCM — it is chip-agnostic and
+  host-testable) + littlefs storage (one fixed-size file per entry:
+  magic + salt + GCM nonce + ct + tag + CRC-32, with the entry name bound as
+  GCM AAD) + a console (list / add / get / dump / rm).
+- **Design choice (decide at build time):** AES-256-GCM on the Pico (portable,
+  host-testable, matches the reference — **lean this way**) vs AES-128-CCM on
+  the chip (offloads the cipher, OPTIGA-specific, via `pico_optiga_aes_ccm`).
+- Sub-steps: (a) littlefs + GCM bring-up (host-test the GCM against NIST
+  vectors); (b) KDF master + add/get; (c) full console (dump/rm).
+
+### 7.2 — FIDO2 (CTAP2 passkey over USB HID)
+- The large one. **Chip = credential-key vault:** P-256 pairs generated
+  on-chip at registration (private keys never leave); the chip signs the
+  32-byte assertion digests (external-digest ECDSA) and its public keys are
+  read back for the COSE_Key. **Pico = protocol:** CTAP2 (CBOR, user-presence
+  state machine, keep-alives) + a resident-credential store, over tinyusb HID.
+- **Reuse:** most of the protocol code (CBOR codec, CTAPHID transport, CTAP2
+  dispatch, credential store) is **chip-agnostic and can be ported directly
+  from `../pico-atecc608/example/fido2/`** — only the crypto backend changes
+  (`atcab_*` → `pico_optiga_*`). The host unit tests that ship with that
+  project (`test_cbor`, `test_ctaphid`, `test_ctap`, `test_cred`) transfer too.
+- Sub-steps: (a) tinyusb HID bring-up + CTAPHID transport (INIT / PING / WINK
+  / CANCEL); (b) CTAP2 `GET_INFO`; (c) `MAKE_CREDENTIAL` (on-chip keygen +
+  packed self-attestation); (d) `GET_ASSERTION` / `GET_NEXT_ASSERTION`
+  (on-chip sign + sync-counter increment); (e) `RESET`; (f) verify
+  end-to-end against webauthn.io / a FIDO2 tester.
+- Requires: USB HID (tinyusb), a user-presence input (button, or the serial
+  console `up` command), littlefs for the credential store + sync counter.
+
+### Reference note — `../pico-atecc608/`
+The sibling ATECC608 project (module + `console`/`vault`/`fido2` examples).
+Key differences that shape this plan:
+- **OPTIGA can do bulk crypto natively** (AES-CCM/CTR/CBC, SHA-256/384/512,
+  HMAC); the ATECC608 cannot, so that project forces pure-C GCM/SHA on the
+  Pico. We inherit the pure-C GCM for portability/parity but *could* offload
+  to the chip if preferred.
+- **No config zone.** The ATECC locks a 128-byte config zone (slot types +
+  access rules) as one clean, guarded step. The OPTIGA has per-object
+  lifecycle + AC tags and no such single safe "lock the layout" step, so we
+  skip provisioning entirely and use the factory-open slots.
+- **The FIDO2 protocol stack is chip-agnostic** and is the main reusable
+  asset from that project.
 
 ## Open questions
 
@@ -455,5 +572,9 @@ In rough order of likely value:
   (done — `tests/`, plain-assert, standalone host CMake project). The
   sync-wait/pump loop needs the PAL + pico time, so it is verified on the
   bench rather than natively.
+- Phase 6 adds a bench-verified `crypt` example (keygen → sign → verify
+  round-trip, HKDF, counter). Phase 7 host-tests the pure-C pieces it ports
+  from `pico-atecc608` (GCM against NIST vectors; CBOR / CTAPHID / CTAP /
+  credential store) in `tests/`, and bench-verifies each example's stdio.
 - Keep the Infineon submodule pinned; bump deliberately (its API is stable
   but the mbedtls dependency churns between branches).
