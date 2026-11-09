@@ -419,7 +419,17 @@ primitives. All vendor APIs below are confirmed present in
   open now — so keygen needs no metadata (AC-tag) write. (The vendor's own
   keygen sample writes the Change AC to ALW first; we must not, so an
   already-open Change AC is required.)
-- Pure read. ✅ Built (bench-verify the inventory before any keygen).
+- Pure read. ✅ Built + bench-verified.
+- **Bench result (this chip):**
+  - Safe ECC keygen targets = **0xE0F2** and **0xE0F3** (both LcsO=creation,
+    Change `LcsO<0x07`, so writable now — no AC write needed).
+  - **0xE0F0 / 0xE0F1 / 0xE0FC** are LcsO=operational with a complex shielded
+    Change AC (`20 E1 40 FD 23 F1 D0` — the same pattern as the locked 0xF1D0
+    AUTHREF): factory-locked/reserved, **do NOT touch**.
+  - 0xE0FD is an RSA key (creation, Change open) — not an ECC target.
+  - Bonus: **0xE120 is already a usable counter** (creation, Type=counter,
+    Change `LcsO<0x07`, Read ALW) — ready for the FIDO2 sync counter in Phase 7.
+  - → Use **0xE0F2** as the Phase 6 1a keygen target; keep **0xE0F3** as a spare.
 
 ### Step 1a — ECDSA core (leaner first slice)
 - `pico_optiga_ecc_gen_keypair(oid, curve, usage, out_pub, out_pub_len)` —
