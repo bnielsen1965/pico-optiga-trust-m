@@ -21,6 +21,13 @@
  * chains of one-shots with at most one pending at a time (optiga_cmd
  * and ifx_i2c share the same event object).
  *
+ * The command scheduler is free-running: optiga_cmd_queue_scheduler
+ * re-arms itself every OPTIGA_CMD_SCHEDULER_IDLING_TIME_MS (1 ms) while
+ * idle; create() and the queue's reset_slot() arm the first ticks
+ * (see src/cmd/optiga_cmd.c). The pump must therefore keep calling
+ * trigger_registered_callback() for the whole lifetime of the
+ * optiga_util instance, not just during a single command.
+ *
  * Pump cadence: applications poll at ~1 ms, which matches the stack's
  * own PL_POLLING_INVERVAL_US (1 ms). The 50 us guard time stretches to
  * at most ~1 ms in practice — fine, the datasheet specifies a minimum,
@@ -34,6 +41,8 @@
  *     }
  */
 
+#include <stdio.h>
+
 #include "pico/time.h"
 #include "pal_os_event.h"
 
@@ -44,12 +53,20 @@ static struct {
     register_callback callback;
     void *args;
     absolute_time_t deadline;
+    uint32_t seq;
+    bool_t traced;
 } g_oneshot;
+
+static uint32_t g_oneshot_seq = 0;
 
 pal_os_event_t *pal_os_event_create(register_callback callback, void *callback_args) {
     if ((NULL != callback) && (NULL != callback_args)) {
         pal_os_event_0.callback_ctx = callback_args;
         pal_os_event_0.callback_registered = callback;
+        // The template and the Linux PAL both start the scheduler here;
+        // the library relies on create() arming the first tick of the
+        // free-running command scheduler.
+        pal_os_event_start(&pal_os_event_0, callback, callback_args);
         return &pal_os_event_0;
     }
     return NULL;
@@ -57,7 +74,10 @@ pal_os_event_t *pal_os_event_create(register_callback callback, void *callback_a
 
 void pal_os_event_destroy(pal_os_event_t *p_pal_os_event) {
     (void)p_pal_os_event;
+    // Bare-metal equivalent of the Linux PAL's timer teardown: stop the
+    // free-running one-shot chain.
     g_oneshot.armed = FALSE;
+    pal_os_event_0.is_event_triggered = FALSE;
 }
 
 void pal_os_event_register_callback_oneshot(
@@ -71,6 +91,13 @@ void pal_os_event_register_callback_oneshot(
     g_oneshot.callback = callback;
     g_oneshot.args = callback_args;
     g_oneshot.deadline = make_timeout_time_us((uint64_t)time_us);
+    g_oneshot.seq = ++g_oneshot_seq;
+    // Trace only the long waits (the 2 s / 12 s reset sequence); the
+    // 50 us / 1 ms chain would overflow a 115200 baud console.
+    g_oneshot.traced = (time_us > 1000u);
+    if (g_oneshot.traced) {
+        printf("[EVT] arm  #%u  %u us\n", (unsigned)g_oneshot.seq, (unsigned)time_us);
+    }
 }
 
 void pal_os_event_start(
@@ -86,20 +113,25 @@ void pal_os_event_start(
 }
 
 void pal_os_event_stop(pal_os_event_t *p_pal_os_event) {
+    // Clears only the "started" flag (template + Linux semantics); the
+    // caller re-arms the pending one-shot immediately when needed (the
+    // cmd scheduler does stop + register_callback_oneshot).
     if (NULL != p_pal_os_event) {
         p_pal_os_event->is_event_triggered = FALSE;
     }
-    g_oneshot.armed = FALSE;
 }
 
 void pal_os_event_trigger_registered_callback(void) {
-    // Pico SDK 2.x has no time_reached(): a deadline is reached when the
-    // signed difference deadline -> now is <= 0.
+    // Pico SDK 2.x has no time_reached(): a deadline is reached when
+    // absolute_time_diff_us(deadline, now) == (now - deadline) >= 0.
     if (g_oneshot.armed
-        && (absolute_time_diff_us(g_oneshot.deadline, get_absolute_time()) <= 0)) {
+        && (absolute_time_diff_us(g_oneshot.deadline, get_absolute_time()) >= 0)) {
         // Disarm before invoking: the callback re-arms the slot for the
         // next step of the state machine.
         g_oneshot.armed = FALSE;
+        if (g_oneshot.traced) {
+            printf("[EVT] fire #%u\n", (unsigned)g_oneshot.seq);
+        }
         register_callback callback = g_oneshot.callback;
         void *args = g_oneshot.args;
         callback(args);
