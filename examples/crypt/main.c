@@ -29,7 +29,10 @@
  *   - keygen into 0xE0F2 (Step 0 confirmed it a safe target: creation,
  *     Change AC already open — no AC-tag write; may advance creation->
  *     operational, never toward termination).
- *   - one counter increment of 0xE120 (Step 0 confirmed it an open counter).
+ *   - counter init (count=0, threshold=10) + one increment of 0xE120
+ *     (Step 0 confirmed it an open counter; these are data-payload writes to
+ *     the counter, not metadata/AC). The init resets it each flash — fine for
+ *     a demo; a real FIDO2 app would init once and only increment.
  * Every other operation is a stateless computation.
  *
  * SHA-256 is computed on the Pico (a small, portable, self-contained
@@ -68,6 +71,14 @@ static const uint8_t kSalt[32] = {
 static const uint8_t kInfo[16] = {
     0x8D, 0xE4, 0x3F, 0xFF, 0x65, 0x2D, 0xA0, 0xA7,
     0xF0, 0x4E, 0x8F, 0x22, 0x84, 0xA4, 0x28, 0x3B};
+
+/* Counter object layout (8 bytes, big-endian): [count: 4][threshold: 4].
+ * Must be initialized (write_data) before update_count works — see the
+ * vendor's counter example. threshold=10 is plenty for a single increment. */
+static const uint8_t kCounterInit[8] = {
+    0x00, 0x00, 0x00, 0x00,  /* initial count = 0 */
+    0x00, 0x00, 0x00, 0x0A,  /* threshold = 10 */
+};
 
 /* =====================================================================
  * SHA-256 (FIPS 180-4) — small, portable, self-contained.
@@ -245,9 +256,12 @@ int main(void) {
     printf("--- ECDSA (keygen 0x%04X, sign, verify) ---\n", (unsigned)KEY_OID);
     uint8_t pub[PUB_CAP];
     size_t pub_len = 0;
+    /* SIGN (for ECDSA) | KEY_AGREEMENT (for ECDH) — usage is fixed at
+     * keygen time, so both must be set up front. */
     rc = pico_optiga_ecc_gen_keypair(KEY_OID, PICO_OPTIGA_CURVE_P256,
-                                     PICO_OPTIGA_USAGE_SIGN, pub, PUB_CAP,
-                                     &pub_len);
+                                     PICO_OPTIGA_USAGE_SIGN |
+                                         PICO_OPTIGA_USAGE_KEY_AGREEMENT,
+                                     pub, PUB_CAP, &pub_len);
     if (PICO_OPTIGA_OK != rc) {
         printf("keygen: FAIL — %s\n", pico_optiga_strerror(rc));
         pico_optiga_deinit();
@@ -335,26 +349,35 @@ int main(void) {
 
     /* ---- Part 2c: counter ---- */
     printf("--- Counter (0x%04X) ---\n", (unsigned)COUNTER_OID);
-    uint8_t before[8];
-    size_t n = 0;
-    if (PICO_OPTIGA_OK == pico_optiga_read_data_obj(COUNTER_OID, before,
-                                                    sizeof(before), &n)) {
-        printf("before:        ");
-        print_hex(before, n);
-    }
-    rc = pico_optiga_counter_incr(COUNTER_OID, 1u);
+    /* Initialize the counter (count=0, threshold=10) — required before
+     * update_count works. A data-payload write to a confirmed-open slot. */
+    rc = pico_optiga_write_data_obj(COUNTER_OID, PICO_OPTIGA_ERASE_AND_WRITE,
+                                    kCounterInit, sizeof(kCounterInit));
     if (PICO_OPTIGA_OK != rc) {
-        printf("counter incr: FAIL — %s\n", pico_optiga_strerror(rc));
+        printf("counter init: FAIL — %s\n", pico_optiga_strerror(rc));
         all_ok = 0;
     } else {
+        printf("counter init: OK\n");
         uint8_t after[8];
-        n = 0;
+        size_t n = 0;
         if (PICO_OPTIGA_OK == pico_optiga_read_data_obj(COUNTER_OID, after,
                                                         sizeof(after), &n)) {
-            printf("after (inc 1): ");
+            printf("after init:    ");
             print_hex(after, n);
         }
-        printf("counter incr: OK\n");
+        rc = pico_optiga_counter_incr(COUNTER_OID, 1u);
+        if (PICO_OPTIGA_OK != rc) {
+            printf("counter incr: FAIL — %s\n", pico_optiga_strerror(rc));
+            all_ok = 0;
+        } else {
+            n = 0;
+            if (PICO_OPTIGA_OK == pico_optiga_read_data_obj(COUNTER_OID, after,
+                                                            sizeof(after), &n)) {
+                printf("after (inc 1): ");
+                print_hex(after, n);
+            }
+            printf("counter incr: OK\n");
+        }
     }
     printf("\n");
 

@@ -486,8 +486,18 @@ primitives. All vendor APIs below are confirmed present in
   cross-check, ECDH (exported shared secret), ECDH→session→HKDF (derived key),
   and a counter increment + read-back of 0xE120.
 - ✅ Built (five wrappers + extended `crypt` example, clean build). **Bench-
-  verify before Step 2.** Writes: keygen 0xE0F2 + one counter increment
-  0xE120 (both Step-0-confirmed open).
+  verify before Step 2.** Writes: keygen 0xE0F2 + counter init + one
+  increment of 0xE120 (all Step-0-confirmed open).
+- **Bench findings (1st run):** ECDSA + SHA-256 cross-check (chip==Pico)
+  PASS. ECDH and the counter failed with device errors; root-caused + fixed:
+  - **ECDH** needs the key's usage to include **KEY_AGREEMENT (0x20)** — the
+    key was generated SIGN-only (0x10). Fix: keygen with
+    `SIGN | KEY_AGREEMENT` (0x30). (Added `PICO_OPTIGA_USAGE_KEY_AGREEMENT`.)
+  - **Counter** 0xE120 is all zeros and must be **initialized** (8 bytes,
+    big-endian `[count:4][threshold:4]`) via `write_data` before
+    `update_count` works — a zero threshold rejects every increment. Fix:
+    init (count=0, threshold=10) then increment.
+  - 2nd bench run pending.
 
 ### Step 2 — Host tests
 - Extend `tests/` for any **pure-C** logic this phase introduces (e.g. COSE

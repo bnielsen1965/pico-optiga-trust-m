@@ -205,8 +205,10 @@ int pico_optiga_get_random(uint8_t *buf, size_t len);
 #define PICO_OPTIGA_CURVE_P256  0x03u  /* NIST P-256 (secp256r1) */
 
 /* Key usage for pico_optiga_ecc_gen_keypair(). The value is the vendor's
- * optiga_key_usage_t. */
+ * optiga_key_usage_t; combine with | for multiple usages. A key's usage is
+ * fixed at keygen time — e.g. ECDH needs KEY_AGREEMENT, ECDSA needs SIGN. */
 #define PICO_OPTIGA_USAGE_SIGN  0x10u  /* private key may sign (ECDSA) */
+#define PICO_OPTIGA_USAGE_KEY_AGREEMENT  0x20u  /* private key may do ECDH */
 
 /*
  * Generate an ECC key pair on the chip into key object `oid` (e.g. 0xE0F2).
