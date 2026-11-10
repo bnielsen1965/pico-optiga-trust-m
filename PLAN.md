@@ -557,25 +557,32 @@ bench-verified before any Phase 7 work begins.
 > be recorded in a document — confirm it is present and correct before any
 > partition change.
 
-### 7.1 — Vault (PIN-gated password store)
-- **Chip = key master.** A stored master secret; each unlock derives a
-  per-entry key via HKDF over `salt ‖ PIN` (the ATECC's `kdf_prf` analog).
-  The master secret and the derived key never appear on the bus in a form the
-  app doesn't control.
-- **Pico = bulk cipher + storage + console.** AES-256-GCM (port the
-  ATECC project's NIST-vector-verified pure-C GCM — it is chip-agnostic and
-  host-testable) + littlefs storage (one fixed-size file per entry:
-  magic + salt + GCM nonce + ct + tag + CRC-32, with the entry name bound as
-  GCM AAD) + a console (list / add / get / dump / rm).
+### 7.1 — Vault (PIN-gated password store)  ✅ DONE (bench-verified)
+- **Chip = key master.** Each unlock derives a per-entry key; the master and
+  the ECDH session secret never appear on the bus — only the 32-byte derived
+  entry key does.
+  - **Master (decided): ECC P-256 on `0xE0F2` (KEY_AGREEMENT).** NOT the
+    symmetric `0xE200` slot: the chip's `derive_key` (HKDF) command only
+    accepts a **shared-secret** input — the ECDH session, or a `PRESSEC`-typed
+    data object. A generated symmetric key slot is a different object class and
+    is refused by the chip firmware (the host forwards the OID verbatim).
+    Per add/get: `session = ECDH(0xE0F2, kPeerPub)` (on-chip) then
+    `entrykey = HKDF(session, salt‖PIN, info=name)` (on-chip, 32 B).
+    `kPeerPub` is the same fixed point the Phase 6 crypt bench used.
+- **Pico = bulk cipher + storage + console.** AES-256-GCM (the ported
+  NIST-vector-verified pure-C GCM) + littlefs storage (one fixed 96-byte file
+  per entry: magic + salt + GCM nonce + pt_len + ct + tag + CRC-32, entry name
+  bound as GCM AAD **and** HKDF info) + a console (help / probe / bootrom /
+  provision / list / add / get / dump / rm). Startup contract: chip present +
+  master provisioned (run `provision` once); never auto-provisions.
 - **Cipher (decided):** AES-256-GCM on the Pico — portable, host-testable,
-  matches the reference. GCM and CCM are both AEAD of comparable strength; the
-  win with 256 over 128 is the key size / security margin (AES-128 is already
-  fully secure classically, but 256-bit stays ~128-bit even under Grover, where
-  128-bit drops to ~64) — the conservative, future-proof choice. AES-128-CCM on
-  the chip remains available later via `pico_optiga_aes_ccm` if we ever want to
-  offload the cipher.
-- Sub-steps: (a) littlefs + GCM bring-up (host-test the GCM against NIST
-  vectors); (b) KDF master + add/get; (c) full console (dump/rm).
+  matches the reference. (AES-128-CCM on the chip remains available later via
+  `pico_optiga_aes_ccm` if we ever want to offload the cipher.)
+- Sub-steps, all done: (a) littlefs + GCM bring-up — GCM host-tested against
+  NIST vectors (`tests/test_vault_gcm.c`); (b) ECC KDF master + add/get;
+  (c) full console (probe/provision/dump/rm); (d) host test for the KDF
+  parameterization — determinism in (salt,PIN,name) + wrong-PIN / swapped-name /
+  salt / CRC / magic / length rejection (`tests/test_vault_kdf.c`).
 
 ### 7.2 — FIDO2 (CTAP2 passkey over USB HID)
 - The large one. **Chip = credential-key vault:** P-256 pairs generated
