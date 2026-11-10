@@ -50,8 +50,37 @@ target_include_directories(test_vault_kdf PRIVATE
     "${PICO_OPTIGA_SRC}/examples/vault"
     "${PICO_OPTIGA_SRC}/include")
 
+# FIDO2 (Phase 7.2) — the chip-agnostic protocol pieces, ported from the
+# sibling pico-atecc608 project (pure C, no Pico/hardware). The sources under
+# test live in examples/fido2/.
+set(FIDO2_SRC "${PICO_OPTIGA_SRC}/examples/fido2")
+
+# CBOR codec (fido_cbor.c).
+add_executable(test_cbor
+    test_cbor.c
+    "${FIDO2_SRC}/fido_cbor.c")
+target_include_directories(test_cbor PRIVATE "${FIDO2_SRC}")
+target_compile_options(test_cbor PRIVATE -Wall -Wextra)
+
+# CTAPHID transport (fido_ctaphid.c) — pure C, no TinyUSB.
+add_executable(test_ctaphid
+    test_ctaphid.c
+    "${FIDO2_SRC}/fido_ctaphid.c")
+target_include_directories(test_ctaphid PRIVATE "${FIDO2_SRC}")
+target_compile_options(test_ctaphid PRIVATE -Wall -Wextra)
+
+# The fido2 example's SHA-256 (fido_sha256.c).
+add_executable(test_fido_sha256
+    test_fido_sha256.c
+    "${FIDO2_SRC}/fido_sha256.c")
+target_include_directories(test_fido_sha256 PRIVATE "${FIDO2_SRC}")
+target_compile_options(test_fido_sha256 PRIVATE -Wall -Wextra)
+
 enable_testing()
 add_test(NAME status_mapping COMMAND test_optiga_status)
 add_test(NAME sha256 COMMAND test_sha256)
 add_test(NAME vault_gcm COMMAND test_vault_gcm)
 add_test(NAME vault_kdf COMMAND test_vault_kdf)
+add_test(NAME cbor COMMAND test_cbor)
+add_test(NAME ctaphid COMMAND test_ctaphid)
+add_test(NAME fido_sha256 COMMAND test_fido_sha256)
