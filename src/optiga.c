@@ -395,6 +395,12 @@ static int read_metadata_impl(uint16_t oid, uint8_t *buf, size_t len,
     return rc;
 }
 
+static int write_metadata_impl(uint16_t oid, const uint8_t *buf, size_t len) {
+    g_status = OPTIGA_LIB_BUSY;
+    return await_result(optiga_util_write_metadata(g_util, oid, buf,
+                                                   (uint8_t)len));
+}
+
 int pico_optiga_read_metadata(uint16_t oid, uint8_t *buf, size_t len,
                               size_t *out_len) {
     if ((NULL == buf) || (0 == len) || (NULL == out_len) ||
@@ -406,6 +412,22 @@ int pico_optiga_read_metadata(uint16_t oid, uint8_t *buf, size_t len,
         return rc;
     }
     rc = read_metadata_impl(oid, buf, len, out_len);
+    op_end();
+    return rc;
+}
+
+int pico_optiga_write_metadata(uint16_t oid, const uint8_t *buf, size_t len) {
+    /* The vendor API takes a uint8_t length, so the metadata blob is capped at
+     * 255 bytes. The write is a TLV delta: only the tags present in `buf` are
+     * updated; the rest of the object's metadata is left untouched. */
+    if ((NULL == buf) || (0u == len) || (len > 0xFFu)) {
+        return PICO_OPTIGA_EINVAL;
+    }
+    int rc = op_begin();
+    if (PICO_OPTIGA_OK != rc) {
+        return rc;
+    }
+    rc = write_metadata_impl(oid, buf, len);
     op_end();
     return rc;
 }

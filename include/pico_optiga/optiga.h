@@ -174,13 +174,29 @@ int pico_optiga_write_data_obj(uint16_t oid, pico_optiga_write_mode_t mode,
  * The metadata describes the object's access conditions (Read/Change/
  * Execute), its life cycle state (LcsO), and its max/used size. This is
  * a pure read — it never modifies the chip. The application must be open.
- *
- * NOTE: writing metadata is a different, far more dangerous operation
- * (it can lock an object's access conditions or advance its life cycle
- * irreversibly). This library deliberately exposes no metadata-write API.
  */
 int pico_optiga_read_metadata(uint16_t oid, uint8_t *buf, size_t len,
                               size_t *out_len);
+
+/*
+ * Write a TLV metadata delta to data object `oid`. Only the tags present in
+ * `buf` are updated; the rest of the object's metadata is left untouched.
+ * `buf` must be a well-formed metadata blob (starts with tag 0x20) of at most
+ * 255 bytes. The application must be open.
+ *
+ * SAFETY — read this before calling:
+ *   - The ONLY irreversible, brick-the-chip metadata write is advancing the
+ *     life cycle (LcsO, tag 0xC0) to Termination (0x0F). NEVER include a 0xC0
+ *     tag in `buf`.
+ *   - Writing an access-condition tag (Change 0xD0 / Read 0xD1 / Exec 0xD3)
+ *     is reversible while the object's LcsO is still in creation/init and does
+ *     not brick the chip. The supported use is the vendor's initial-provision
+ *     flow: open a factory-empty slot's Change/Exec ACs to ALW so a key can be
+ *     generated into it (see examples/sym_keygen_probe).
+ *   - Do NOT use this to write the LcsO of any object, and do NOT use it on a
+ *     factory-locked slot.
+ */
+int pico_optiga_write_metadata(uint16_t oid, const uint8_t *buf, size_t len);
 
 /* ---------------------------------------------------------------------
  * Random

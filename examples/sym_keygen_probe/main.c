@@ -9,19 +9,25 @@
  * is forbidden by our safety model). But the chip's gen_symkey command may set
  * up what it needs on its own, in which case no metadata write is required.
  *
- * This probe answers that directly:
- *   1. reads + prints the raw 0xE200 metadata (is the key-algo tag 0xE0
- *      already present, as the vendor's example checks for?);
- *   2. attempts pico_optiga_symmetric_generate_key(0xE200, AES-256,
- *      ENCRYPTION, no export);
- *   3. on success, re-reads the metadata (the used size should now be > 0) and
- *      derives a test key with pico_optiga_hkdf(0xE200, ...) to confirm the
+ * Flow (the vendor's initial-provision sequence):
+ *   1. read + print 0xE200 metadata (LcsO / Change / Exec ACs, key-algo tag);
+ *   2. WRITE the metadata to open the Change + Exec ACs to ALW — a TLV delta
+ *      with NO LcsO tag, so it cannot advance the life cycle (no bricking).
+ *      This is the vendor's own first-provision step and the one the earlier
+ *      probe skipped; it is reversible while the slot is in creation.
+ *   3. read the metadata again (Change should now read ALW);
+ *   4. attempt pico_optiga_symmetric_generate_key(0xE200, AES-256, ENCRYPTION,
+ *      no export);
+ *   5. read the metadata again (the 0xE0 key-algo tag should now be present);
+ *   6. derive a test key with pico_optiga_hkdf(0xE200, ...) to confirm the
  *      full master -> HKDF path the Vault would use.
  *
- * SAFETY. A symmetric keygen does not advance any life-cycle state and cannot
- * brick the chip. If it succeeds, 0xE200 now holds an AES-256 key — exactly
- * what the Vault wants as its master. If it fails, nothing changed. (Running
- * it twice re-keys the slot, which is harmless for a probe.)
+ * SAFETY. The only brick-the-chip write is advancing a life cycle (LcsO, tag
+ * 0xC0) to Termination (0x0F); this probe never writes a 0xC0 tag. Opening an
+ * AC on a factory-empty slot in creation is reversible and is the vendor's
+ * documented flow. A keygen advances no life cycle. If the keygen succeeds,
+ * 0xE200 now holds an AES-256 key — exactly what the Vault wants as its
+ * master. (Running it twice re-keys the slot, harmless for a probe.)
  *
  * This is a diagnostic, not a littlefs app: it links only the standard deps.
  */
@@ -33,6 +39,21 @@
 #include "pico_optiga/optiga.h"
 
 #define MASTER_OID 0xE200u  /* the only symmetric key slot on this chip */
+
+/* The vendor's initial-provision descriptor for 0xE200: open the Change and
+ * Exec ACs to ALW so a key can be generated into the (factory-empty) slot.
+ *
+ * SAFETY:
+ *   - NO LcsO (0xC0) tag — the life cycle is left exactly as it is, so this
+ *     cannot advance it toward Termination (the only brick-the-chip write).
+ *   - Writing an AC tag is reversible while the slot's LcsO is in creation,
+ *     and this is the vendor's own documented first-provision step.
+ *   - Scoped to 0xE200 only (a factory-empty slot provided for us to use). */
+static const uint8_t kE200Open[] = {
+    0x20, 0x06,         /* meta start, total len 6 */
+    0xD0, 0x01, 0x00,   /* Change AC -> ALW (0x00) */
+    0xD3, 0x01, 0x00,   /* Exec AC   -> ALW (0x00) */
+};
 
 static void print_hex(const uint8_t *buf, size_t len) {
     for (size_t i = 0; i < len; i++) {
@@ -46,9 +67,36 @@ static void print_hex(const uint8_t *buf, size_t len) {
     printf("\n");
 }
 
-/* Read 0xE200 metadata and summarize it: the raw bytes, whether the key-algo
- * tag (0xE0) the vendor's example checks for is present, and whether the
- * used-size tag (0xC5) is non-empty (a key is stored). Returns the read rc. */
+/* Find a 1-byte-valued TLV tag in the metadata; return its value, or -1 if
+ * absent. (Coarse parse — good enough for a diagnostic.) */
+static int find_tag_val(const uint8_t *meta, size_t n, uint8_t tag) {
+    for (size_t i = 0; i + 2u < n; i++) {
+        if ((meta[i] == tag) && (meta[i + 1u] == 0x01u)) {
+            return (int)meta[i + 2u];
+        }
+    }
+    return -1;
+}
+
+static const char *ac_name(int v) {
+    if (v == 0x00) return "ALW";
+    if (v == 0xFF) return "NEV";
+    return "?";
+}
+
+static const char *lcs_name(int v) {
+    switch (v) {
+        case 0x01: return "creation";
+        case 0x03: return "init";
+        case 0x07: return "operational";
+        case 0x0F: return "TERMINATION";
+        default:   return "?";
+    }
+}
+
+/* Read 0xE200 metadata and summarize it: the decoded LcsO / Change / Exec ACs
+ * and whether the key-algo tag (0xE0) is present (a key is stored). The raw
+ * bytes follow. Returns the read rc. */
 static int probe_slot(const char *label) {
     uint8_t meta[256];
     size_t n = 0;
@@ -58,24 +106,15 @@ static int probe_slot(const char *label) {
                pico_optiga_strerror(rc));
         return rc;
     }
-    printf("%s: 0x%04X metadata (%u bytes):\n    ", label, (unsigned)MASTER_OID,
-           (unsigned)n);
+    int lcs  = find_tag_val(meta, n, 0xC0u);
+    int chg  = find_tag_val(meta, n, 0xD0u);
+    int exec = find_tag_val(meta, n, 0xD3u);
+    int algo = find_tag_val(meta, n, 0xE0u);
+    printf("%s: LcsO=%-11s Change=%-3s Exec=%-3s key-algo(0xE0)=%s\n",
+           label, lcs_name(lcs), ac_name(chg), ac_name(exec),
+           (algo >= 0) ? "present" : "absent");
+    printf("    raw (%u bytes): ", (unsigned)n);
     print_hex(meta, n);
-
-    int have_algo = 0;
-    int used_nonzero = 0;
-    for (size_t i = 0; i < n; i++) {
-        if (meta[i] == 0xE0u) {
-            have_algo = 1;
-        }
-        /* 0xC5 is the used-size tag; a non-zero following byte means a key is
-         * present. (Coarse — good enough for a before/after comparison.) */
-        if ((meta[i] == 0xC5u) && (i + 2u < n) && (0u != meta[i + 2u])) {
-            used_nonzero = 1;
-        }
-    }
-    printf("    key-algo tag 0xE0 present: %s | used-size non-empty: %s\n",
-           have_algo ? "yes" : "no", used_nonzero ? "yes" : "no");
     return PICO_OPTIGA_OK;
 }
 
@@ -92,30 +131,52 @@ int main(void) {
     }
     printf("init: OK\n\n");
 
-    /* 1. Slot state before keygen. */
+    /* 1. Slot state before any write. */
     probe_slot("before");
     printf("\n");
 
-    /* 2. Attempt the keygen (AES-256, ENCRYPTION usage, key stays on chip). */
+    /* 2. The vendor's initial-provision step: open the Change + Exec ACs to
+     *    ALW. This is a metadata (AC-tag) write, NOT a life-cycle write — the
+     *    blob has no 0xC0 tag, so it cannot advance the LcsO toward
+     *    Termination (the only brick-the-chip write). Reversible while the
+     *    slot is in creation. This is the step the earlier probe skipped, which
+     *    is why the keygen used to fail. */
+    printf("opening 0x%04X ACs (Change->ALW, Exec->ALW)...\n",
+           (unsigned)MASTER_OID);
+    rc = pico_optiga_write_metadata(MASTER_OID, kE200Open, sizeof(kE200Open));
+    if (PICO_OPTIGA_OK != rc) {
+        printf("metadata write: FAIL — %s\n", pico_optiga_strerror(rc));
+        printf("=> cannot open the slot; the keygen will not work. Stop here.\n");
+        pico_optiga_deinit();
+        return 1;
+    }
+    printf("metadata write: OK\n\n");
+
+    /* 3. Slot state after the AC open (Change should now read ALW). */
+    probe_slot("after-open");
+    printf("\n");
+
+    /* 4. Now attempt the keygen (AES-256, ENCRYPTION usage, key stays on
+     *    chip). With the Change AC open, this should succeed. */
     printf("attempting symmetric keygen (AES-256, ENCRYPTION, no export)...\n");
     rc = pico_optiga_symmetric_generate_key(
         MASTER_OID, PICO_OPTIGA_SYM_AES_256, PICO_OPTIGA_USAGE_ENCRYPTION, 0,
         NULL, 0);
     if (PICO_OPTIGA_OK != rc) {
         printf("keygen: FAIL — %s\n", pico_optiga_strerror(rc));
-        printf("\n=> 0x%04X is NOT keygen-able as-is (Change AC NEV blocks it).\n"
-               "   Fall back to the ECC-master design (0xE0F2).\n",
+    } else {
+        printf("keygen: OK — 0x%04X now holds an on-chip AES-256 key.\n",
                (unsigned)MASTER_OID);
-        pico_optiga_deinit();
-        return 1;
     }
-    printf("keygen: OK — 0x%04X now holds an on-chip AES-256 key.\n\n",
-           (unsigned)MASTER_OID);
-
-    /* 3. Confirm the slot now holds a key, and that master -> HKDF works. */
-    probe_slot("after");
     printf("\n");
 
+    /* 5. Slot state after keygen (the 0xE0 key-algo tag should now be present). */
+    probe_slot("after-keygen");
+    printf("\n");
+
+    /* 6. THE real test: can we derive a key from 0xE200 via HKDF? This works
+     *    if the slot holds a key. This is the master->HKDF path the Vault uses,
+     *    so run it regardless of the keygen outcome. */
     uint8_t salt[16] = {0};
     uint8_t info[8] = {0};
     uint8_t dk[32];
@@ -124,11 +185,16 @@ int main(void) {
     if (PICO_OPTIGA_OK != rc) {
         printf("hkdf from 0x%04X: FAIL — %s\n", (unsigned)MASTER_OID,
                pico_optiga_strerror(rc));
+        printf("\n=> 0x%04X has no usable key: keygen failed AND there is no\n"
+               "   pre-existing key to derive from. Fall back to the ECC master\n"
+               "   (0xE0F2).\n",
+               (unsigned)MASTER_OID);
     } else {
         printf("hkdf from 0x%04X: OK — derived 32-byte key:\n    ",
                (unsigned)MASTER_OID);
         print_hex(dk, sizeof(dk));
-        printf("\n=> 0x%04X works as the Vault master (keygen + HKDF both OK).\n",
+        printf("\n=> 0x%04X holds a USABLE key for the Vault master (HKDF OK) —\n"
+               "   use it directly; no keygen needed.\n",
                (unsigned)MASTER_OID);
     }
 
