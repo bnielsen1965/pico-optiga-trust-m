@@ -76,6 +76,14 @@ add_executable(test_fido_sha256
 target_include_directories(test_fido_sha256 PRIVATE "${FIDO2_SRC}")
 target_compile_options(test_fido_sha256 PRIVATE -Wall -Wextra)
 
+# DER ECDSA sig <-> raw r||s (fido_der.c) — the OPTIGA-signs-DER / CTAP2-wants-
+# raw glue. Pure C.
+add_executable(test_fido_der
+    test_fido_der.c
+    "${FIDO2_SRC}/fido_der.c")
+target_include_directories(test_fido_der PRIVATE "${FIDO2_SRC}")
+target_compile_options(test_fido_der PRIVATE -Wall -Wextra)
+
 enable_testing()
 add_test(NAME status_mapping COMMAND test_optiga_status)
 add_test(NAME sha256 COMMAND test_sha256)
@@ -84,3 +92,4 @@ add_test(NAME vault_kdf COMMAND test_vault_kdf)
 add_test(NAME cbor COMMAND test_cbor)
 add_test(NAME ctaphid COMMAND test_ctaphid)
 add_test(NAME fido_sha256 COMMAND test_fido_sha256)
+add_test(NAME fido_der COMMAND test_fido_der)
