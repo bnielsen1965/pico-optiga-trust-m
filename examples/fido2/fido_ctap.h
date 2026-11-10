@@ -106,13 +106,13 @@ enum {
 // Longest credential ID we accept (spec: > 0 if present). Browsers
 // mint 32-64 byte IDs.
 #define FIDO_CTAP_MAX_CRED_ID_LEN   64
-// Resident-key capacity — the credential DB holds four records (see
-// FIDO_CRED_MAX); also the GET_INFO
+// Resident-key capacity — the credential DB holds thirty-two records
+// (see FIDO_CRED_MAX); also the GET_INFO
 // remainingDiscoverableCredentials value.
-#define FIDO_CTAP_MAX_CREDENTIALS   4
+#define FIDO_CTAP_MAX_CREDENTIALS   32
 
 // COSE algorithm identifier for ES256 (P-256, SHA-256) — the only
-// algorithm this device supports (the ATECC608 is ECC-only).
+// algorithm this device supports (the OPTIGA is ECC-only).
 #define FIDO_CTAP_ALG_ES256 (-7)
 
 // The user-presence wait of a MakeCredential: the spec requires >= 10 s
@@ -139,8 +139,8 @@ enum {
 // a gap longer than this discards the enumeration state.
 #define FIDO_CTAP_GA_ENUM_TIMEOUT_MS 30000
 
-// The key backend the CTAP layer signs with (the ATECC608 on the Pico;
-// deterministic fakes in the host tests). Every hook is
+// The key backend the CTAP layer signs with (the OPTIGA Trust M on the
+// Pico; deterministic fakes in the host tests). Every hook is
 // optional (NULL = the operation is impossible, which the command
 // answers CTAP2_ERR_OTHER), but a working registration needs
 // genkey/sign/rand/clock and a working login needs get_pubkey and
@@ -241,7 +241,7 @@ typedef struct {
     // completes on it.
     volatile bool user_present;
 
-    fido_ctap_key_ops_t keys;    // the ATECC608 (app-installed)
+    fido_ctap_key_ops_t keys;    // the OPTIGA (app-installed)
     fido_cred_store_t   creds;   // the resident-credential DB
 
     // The deferred transaction (at most one at a time).

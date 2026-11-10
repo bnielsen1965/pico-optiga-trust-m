@@ -1,7 +1,7 @@
 // fido_cose.h
 //
 // COSE_Key encoding for this device's one algorithm (ES256 on P-256):
-// the ATECC608's 64-byte X‖Y public key becomes the canonical CBOR
+// the chip's 64-byte X‖Y public key becomes the canonical CBOR
 // COSE map a MakeCredential response carries in its
 // attestedCredentialData (WebAuthn §6.2). Pure C on the CTAP CBOR
 // codec; host-tested with a byte-pinned KAT in tests/test_ctap.c.
@@ -32,8 +32,9 @@ uint32_t fido_cose_encode_es256(const uint8_t pub[64], uint8_t *out,
 // length) + 1 (sign pad) + 32 (value) = 72.
 #define FIDO_ECDSA_DER_SIG_MAX 72
 
-// Encode a raw P-256 ECDSA signature (R(32) || S(32), the ATECC608 Sign
-// output) as the ASN.1 DER Ecdsa-Sig-Value that WebAuthn L3 section 6.5.5
+// Encode a raw P-256 ECDSA signature (R(32) || S(32), the key backend's
+// normalized output) as the ASN.1 DER Ecdsa-Sig-Value that WebAuthn L3
+// section 6.5.5
 // MANDATES for ES256 assertion and packed-attestation signatures (RFC 3279
 // section 2.2.3):
 //

@@ -8,7 +8,8 @@
 # example-only code.
 #
 #   fs_audit/  read-only audit of the existing littlefs volume (Phase 7 prereq)
-#   (vault/ + fido2/ arrive in Phase 7)
+#   vault/     PIN-gated password store (Phase 7.1, ECC-master on 0xE0F2)
+#   fido2/     FIDO2 (CTAP2) passkey authenticator (Phase 7.2, one-key on 0xE0F3)
 #
 # Every examples/<name>/main.c becomes a flashable .uf2. Stdio goes over
 # UART0 (CP210x USB-serial bridge on the bench), not the Pico's native USB
@@ -76,6 +77,16 @@ foreach(_dir IN LISTS _example_dirs)
         # Phase 7 examples (and the read-only fs_audit) persist to littlefs.
         if(_name IN_LIST _pico_optiga_lfs_examples AND TARGET pico-littlefs)
             list(APPEND _example_deps pico-littlefs)
+        endif()
+        # The FIDO2 example is a pure-HID USB device: it links TinyUSB's marked
+        # device target (the SDK's bundled TinyUSB is 0.21.0, the same commit
+        # the reference pins), runs the USB task on core 1 (pico_multicore),
+        # and uses the board's unique ID for the USB serial string
+        # (pico_unique_id). tusb_config.h (in the example dir) must be
+        # reachable as a bare include from every TU that pulls in tusb.h.
+        if(_name STREQUAL "fido2")
+            list(APPEND _example_deps tinyusb_device pico_multicore pico_unique_id)
+            target_include_directories(${_name} PRIVATE "${_dir}")
         endif()
         target_link_libraries(${_name} PRIVATE ${_example_deps})
         pico_enable_stdio_uart(${_name} 1)

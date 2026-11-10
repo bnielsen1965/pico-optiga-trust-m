@@ -35,15 +35,19 @@
 
 #include "tusb.h"
 
-#include "atecc608/atecc608.h"
-#include "atecc608/atecc608_crypto.h"
-#include "atecc608/atecc608_prov.h"
+#include "pico/stdlib.h"
 
 #include "pico_littlefs.h"
 
 #include "fido_ctap.h"
 #include "fido_ctaphid.h"
 #include "fido_button.h"
+#include "fido_optiga.h"
+
+// osal_time_millis() is provided by TinyUSB's osal_pico.h (pulled in via
+// tusb.h) — the same to_ms_since_boot monotonic clock the CTAP timers need.
+// (The ATECC608 reference got it from its library's OSAL; here TinyUSB's
+// OSAL fills that role, so no local wrapper is defined.)
 
 // On-board LED (GP25): status indicator + WINK.
 #define FIDO2_LED_PIN 25
@@ -132,7 +136,7 @@ _Static_assert(sizeof s_config_desc == FIDO2_CFG_LEN,
 // several of these on one PC.
 static const char *const s_strings[] = {
     [1] = "Raspberry Pi",
-    [2] = "Pico ATECC608 FIDO2",
+    [2] = "Pico OPTIGA FIDO2",
     [3] = NULL,
 };
 static char s_serial[17];
@@ -177,11 +181,11 @@ static void led_wink_cb(void *ctx)
 // land the instant the host ACKs the previous packet.
 //
 // On one core the re-arm ran in the main loop, which also carried the slow
-// CTAP/ATECC608 work (I2C, ms-scale) and the console — too slow to beat the
+// CTAP/OPTIGA work (I2C, ms-scale) and the console — too slow to beat the
 // host's re-poll (and a blocking printf made it ~17 ms per packet, the C4
 // stall). The fix: run the USB task on the SECOND core in a tight spin
 // (tud_task + outq_drain and nothing else), so the next report is armed in
-// us. The slow work (CTAP dispatch, ATECC608 I2C, console, LED) stays on
+// us. The slow work (CTAP dispatch, OPTIGA I2C, console, LED) stays on
 // core 0 at a 1 ms cadence. No RTOS: the two cores exchange 64-byte
 // reports through two lock-free single-producer/single-consumer ring
 // buffers —
@@ -355,6 +359,19 @@ static void console_line_done(void)
                 printf("fido2: counter zero FAILED\n");
             }
             printf("fido2: credential store wiped (%d record(s))\n", n);
+        } else if (0 == strcmp(s_console_line, "provision")) {
+            // One-time master keygen: generate the P-256 keypair into
+            // 0xE0F3 and cache its public key in littlefs. Idempotent —
+            // if the key already exists it is a no-op (it never re-keys,
+            // so it cannot invalidate existing credentials). After a
+            // fresh provision a reboot enables CTAP (the startup contract
+            // re-checks the pub-key cache).
+            if (0 == fido_optiga_provision()) {
+                printf("fido2: 0xE0F3 provisioned (FIDO2 master) — reboot "
+                       "to enable CTAP if this was a fresh key\n");
+            } else {
+                printf("fido2: provision FAILED (chip not ready?)\n");
+            }
         } else if (0 == strcmp(s_console_line, "pin")) {
             // Wiring diagnostic for the (optional) GP10 button:
             // 'released' at rest, 'pressed' while the switch is down.
@@ -363,7 +380,7 @@ static void console_line_done(void)
                                                      : "released");
         } else {
             printf("fido2: unknown console command '%s' — try 'up', "
-                   "'wipe' or 'pin'\n",
+                   "'wipe', 'provision' or 'pin'\n",
                    s_console_line);
         }
     }
@@ -385,135 +402,20 @@ static void console_tick(void)
     }
 }
 
-// --- ATECC608 key backend (the CTAP layer's vtable) -------------------------------
-// The CTAP layer (fido_ctap.h) knows no chip: it calls these hooks.
-// Slots 3-6 hold the credential key pairs (slot 1 is the device
-// identity key, provisioning-only — the CTAP layer never touches it).
+// --- key backend (the CTAP layer's vtable) ---------------------------------------
+// The CTAP layer (fido_ctap.h) knows no chip: it calls the
+// fido_ctap_key_ops_t hooks that fido_hid_init() installs from
+// fido_optiga.c — the OPTIGA Trust M one-key backend (a single P-256
+// key on 0xE0F3 shared by every credential and the attestation, a
+// littlefs sync counter, and the chip TRNG). The ATECC608 be_* hooks
+// this file once carried are gone with the chip; see fido_optiga.c.
 
-static int be_genkey(void *dev, uint8_t slot, uint8_t pub[64])
-{
-    (void)dev;
-    return (ATECC608_OK == atecc608_genkey(slot, pub)) ? 0 : -1;
-}
-
-static int be_get_pubkey(void *dev, uint8_t slot, uint8_t pub[64])
-{
-    (void)dev;
-    // Read-only recompute from the on-chip private key (ATECC608
-    // GetPubKey — not confirm-gated, works with the data zone locked).
-    // The credential record carries no key material; this is where the
-    // assertion authData's COSE_Key comes from.
-    return (ATECC608_OK == atecc608_get_pubkey(slot, pub)) ? 0 : -1;
-}
-
-static int be_sign(void *dev, uint8_t slot, const uint8_t digest[32],
-                   uint8_t sig[64])
-{
-    (void)dev;
-    return (ATECC608_OK == atecc608_sign(slot, digest, sig)) ? 0 : -1;
-}
-
-// The CTAP sync counter — two backends (FIDO2_COUNTER_CHIP selects the
-// chip's):
-//
-//   littlefs (default): /f2_cnt, 4 bytes big-endian. Survives reflashes
-//   (littlefs @ 0x80000) and IS resettable — RESET and the console
-//   'wipe' zero it. A missing or corrupt file reads as 0. Writes go
-//   through pico_lfs_write_file -> flash_safe_execute (core-0 stable
-//   point; the card tick is the only caller).
-//
-//   chip (FIDO2_COUNTER_CHIP): ATECC608 Counter 0, hardware-monotonic,
-//   NEVER resettable (counter_zero is NULL; RESET/wipe leave it alone).
-#ifdef FIDO2_COUNTER_CHIP
-
-static uint32_t be_counter(void *dev)
-{
-    (void)dev;
-    uint32_t v = 0;
-    // A read failure degrades to 0 — the counter is advisory, not
-    // security-critical.
-    if (ATECC608_OK != atecc608_counter_read(0, &v)) {
-        v = 0;
-    }
-    return v;
-}
-
-// The confirm gate for the non-interactive increment: user presence is
-// already in evidence (the transaction waited for it) and the increment
-// IS the requested operation.
-static bool be_confirm(const char *prompt, void *ctx)
-{
-    (void)prompt;
-    (void)ctx;
-    return true;
-}
-
-static int be_counter_inc(void *dev, uint32_t *new_value)
-{
-    (void)dev;
-    return (ATECC608_OK == atecc608_counter_increment(0, new_value,
-                                                      be_confirm, NULL)) ?
-           0 : -1;
-}
-
-#else   // the littlefs counter (default)
-
-#define FIDO2_CNT_PATH  "/f2_cnt"
-
-static uint32_t cnt_read(void)
-{
-    uint8_t b[4];
-    if (4 != pico_lfs_read_file(FIDO2_CNT_PATH, b, sizeof b)) {
-        return 0;   // missing or corrupt file = 0
-    }
-    return ((uint32_t)b[0] << 24) | ((uint32_t)b[1] << 16) |
-           ((uint32_t)b[2] << 8) | (uint32_t)b[3];
-}
-
-static int cnt_write(uint32_t v)
-{
-    const uint8_t b[4] = { (uint8_t)(v >> 24), (uint8_t)(v >> 16),
-                           (uint8_t)(v >> 8), (uint8_t)v };
-    return pico_lfs_write_file(FIDO2_CNT_PATH, b, sizeof b);
-}
-
-static uint32_t be_counter(void *dev)
-{
-    (void)dev;
-    return cnt_read();
-}
-
-static int be_counter_inc(void *dev, uint32_t *new_value)
-{
-    (void)dev;
-    const uint32_t v = cnt_read() + 1u;   // wraps at 2^32 (WebAuthn counter)
-    *new_value = v;
-    return cnt_write(v);
-}
-
-static int be_counter_zero(void *dev)
-{
-    (void)dev;
-    return cnt_write(0);
-}
-
-#endif   // FIDO2_COUNTER_CHIP
-
-static int be_rand(void *dev, uint8_t *buf, uint32_t len)
-{
-    (void)dev;
-    return (ATECC608_OK == atecc608_random(buf, len)) ? 0 : -1;
-}
-
-static uint32_t be_clock(void *dev)
-{
-    (void)dev;
-    return osal_time_millis();
-}
-
-// --- credential DB on littlefs (/f2_<slot>) ------------------------------------------
-// One fixed-size file per credential slot: the 236-byte record image
+// --- credential DB on littlefs (/f2c_<idx>) -----------------------------------------
+// One fixed-size file per credential record: the 236-byte record image
 // (fido_cred.h — CRC-32 checked, the vault's /io_key.bin convention).
+// In the one-key model the record's "slot" field IS the table index
+// (0..FIDO_CRED_MAX-1) — every record signs with the single 0xE0F3 key,
+// so the index only addresses the metadata row, not a chip slot.
 // Same flash layout as the console/vault apps (littlefs @ 0x80000), so
 // a reflashed fido2 keeps its credentials. The store (in the CTAP
 // context) persists through these hooks BEFORE it changes RAM — a
@@ -521,7 +423,7 @@ static uint32_t be_clock(void *dev)
 
 static void cred_path(char *out, size_t out_max, uint8_t slot)
 {
-    snprintf(out, out_max, "/f2_%u", (unsigned)slot);
+    snprintf(out, out_max, "/f2c_%u", (unsigned)slot);
 }
 
 static int cred_save(void *priv, uint8_t slot, const fido_cred_record_t *rec)
@@ -580,8 +482,8 @@ uint8_t const *tud_descriptor_configuration_cb(uint8_t index)
 uint16_t const *tud_descriptor_string_cb(uint8_t index, uint16_t langid)
 {
     (void)langid;
-    // Longest string is 18 chars ("Pico ATECC608 FIDO2") + the length
-    // word.
+    // Longest string is 17 chars ("Pico OPTIGA FIDO2"); the 18-char cap
+    // and 20-slot buffer leave headroom for the 16-char serial too.
     static uint16_t desc_str[19 + 1];
     uint8_t len;
 
@@ -645,7 +547,7 @@ void tud_hid_set_report_cb(uint8_t instance, uint8_t report_id,
         return;
     }
     // The report is only ENQUEUED here: the CTAP dispatch it can trigger
-    // does ATECC608 I2C (ms-scale), and running that on core 1 would delay
+    // does OPTIGA I2C (ms-scale), and running that on core 1 would delay
     // the IN re-arm (the delivery stall). Core 0 drains s_cmdq and feeds
     // fido2_ctaphid_input at its 1 ms cadence; the queue's FIFO order
     // preserves the transport's in-flight state.
@@ -687,38 +589,21 @@ void fido_hid_init(bool enabled)
     pico_get_unique_board_id_string(s_serial, sizeof s_serial);
 
     fido_ctap_ctx_init(&s_ctap_ctx);
-    // The key backend: the ATECC608 (see the section above).
-    s_ctap_ctx.keys = (fido_ctap_key_ops_t) {
-        .genkey       = be_genkey,
-        .get_pubkey   = be_get_pubkey,
-        .sign         = be_sign,
-        .counter      = be_counter,
-        .counter_inc  = be_counter_inc,
-#ifdef FIDO2_COUNTER_CHIP
-        .counter_zero = NULL,   // the chip's counter is never reset
-#else
-        .counter_zero = be_counter_zero,
-#endif
-        .rand         = be_rand,
-        .clock        = be_clock,
-    };
+    // The key backend: the OPTIGA one-key model (fido_optiga.c) — a single
+    // P-256 key on 0xE0F3 shared by every credential AND the attestation,
+    // a littlefs sync counter (resettable, so RESET zeroes it cleanly),
+    // and the chip TRNG. `dev` is NULL: the module is a process global
+    // opened by pico_optiga_init() in main.
+    fido_optiga_install_key_ops(&s_ctap_ctx.keys);
     // The credential DB on littlefs, one file per record.
     s_ctap_ctx.creds.save  = cred_save;
     s_ctap_ctx.creds.erase = cred_erase;
-    // The credential DB's littlefs volume (the console/vault pattern:
-    // mount a formatted volume, format on first boot).
-    if (0 == pico_lfs_init(NULL)) {
-        if (0 != pico_lfs_mount_existing()) {
-            printf("littlefs: no formatted volume — formatting (one-time; can take a while)...\n");
-            if (0 != pico_lfs_mount()) {
-                printf("littlefs mount FAILED — credential persistence unavailable.\n");
-            } else {
-                printf("littlefs: fresh volume formatted.\n");
-            }
-        }
-        if (pico_lfs_is_mounted()) {
-            cred_load_db(&s_ctap_ctx);
-        }
+    // The credential DB's littlefs volume is mounted by main() BEFORE
+    // fido_hid_init — the startup's provisioned check reads the pub-key
+    // cache from it (the console/vault mount pattern lives in main).
+    // Just load the credential records here.
+    if (pico_lfs_is_mounted()) {
+        cred_load_db(&s_ctap_ctx);
     }
     fido2_ctaphid_init(&s_ctaphid);
     report_q_flush(&s_outq);

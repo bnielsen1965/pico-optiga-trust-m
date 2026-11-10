@@ -11,7 +11,10 @@
 
 // The claimed AAGUID — fixed per firmware (a demo value, not
 // FIDO-registered). 16 bytes, as transmitted in MakeCredential
-// AuthenticatorData.
+// AuthenticatorData. Inherited from the reference so the byte-exact CTAP2
+// KATs (tests/test_ctap.c — the AAGUID flows through authData into the
+// attestation signature) stay valid; a distinct OPTIGA AAGUID is a
+// follow-up that would require regenerating those KATs.
 static const uint8_t s_aaguid[16] = {
     0x65, 0xF5, 0x10, 0x7F, 0x31, 0xA6, 0x47, 0x85,
     0x93, 0x01, 0x67, 0x88, 0xE1, 0x0E, 0xC7, 0x76,
@@ -202,7 +205,8 @@ static void handle_get_info(const fido_ctap_ctx_t *ctx,
 // that always follows; L3 layout is UP=0x01 UV=0x04 BE=0x08 BS=0x10
 // AT=0x40 ED=0x80 (matching the FIDO-certified pico-fido2 reference).
 // rpIdHash = SHA-256(rp.id). signCount = the
-// ATECC608's counter 0, READ (the login path increments it per signature).
+// key backend's sync counter, READ (the login path increments it per
+// signature).
 // The "packed" signature is over SHA-256(authData ‖ clientDataHash),
 // made by the freshly generated credential key.
 
@@ -1149,7 +1153,9 @@ static int mc_create(fido_ctap_ctx_t *ctx, uint8_t *resp, uint32_t resp_max,
     }
     const uint8_t slot = (uint8_t)(idx + FIDO_CRED_SLOT_MIN);
 
-    // The on-chip key pair (the private key never leaves the ATECC608).
+    // The on-chip key pair (the private key never leaves the OPTIGA). In
+    // the one-key model genkey is key-once: it returns the single 0xE0F3
+    // public key on every call, so `pub` is the same for every credential.
     uint8_t pub[64];
     if (NULL == ctx->keys.genkey ||
         0 != ctx->keys.genkey(ctx->keys.dev, slot, pub)) {
@@ -1224,8 +1230,8 @@ static int mc_create(fido_ctap_ctx_t *ctx, uint8_t *resp, uint32_t resp_max,
 
     // Record the credential (the store persists through its save hook
     // FIRST — a failed persistence leaves the store unchanged and the
-    // registration fails; the chip slot is re-generable, so the next
-    // request self-heals).
+    // registration fails; the metadata record is re-creatable, so the
+    // next request for the same (rp, user) self-heals).
     fido_cred_record_t rec;
     memset(&rec, 0, sizeof rec);
     rec.slot = slot;

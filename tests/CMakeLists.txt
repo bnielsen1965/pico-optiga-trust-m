@@ -84,6 +84,27 @@ add_executable(test_fido_der
 target_include_directories(test_fido_der PRIVATE "${FIDO2_SRC}")
 target_compile_options(test_fido_der PRIVATE -Wall -Wextra)
 
+# Credential store (fido_cred.c) — the record format, its CRC-32, and the
+# store ops (alloc/load/find/insert/erase, persist-first). Pure C.
+add_executable(test_cred
+    test_cred.c
+    "${FIDO2_SRC}/fido_cred.c")
+target_include_directories(test_cred PRIVATE "${FIDO2_SRC}")
+target_compile_options(test_cred PRIVATE -Wall -Wextra)
+
+# CTAP2 command dispatch (fido_ctap.c) — GET_INFO / MAKE_CREDENTIAL /
+# GET_ASSERTION / RESET. Pulls in the codec + store + COSE + SHA-256.
+# Pure C; a fake key backend stands in for the chip.
+add_executable(test_ctap
+    test_ctap.c
+    "${FIDO2_SRC}/fido_ctap.c"
+    "${FIDO2_SRC}/fido_cbor.c"
+    "${FIDO2_SRC}/fido_cred.c"
+    "${FIDO2_SRC}/fido_cose.c"
+    "${FIDO2_SRC}/fido_sha256.c")
+target_include_directories(test_ctap PRIVATE "${FIDO2_SRC}")
+target_compile_options(test_ctap PRIVATE -Wall -Wextra)
+
 enable_testing()
 add_test(NAME status_mapping COMMAND test_optiga_status)
 add_test(NAME sha256 COMMAND test_sha256)
@@ -93,3 +114,5 @@ add_test(NAME cbor COMMAND test_cbor)
 add_test(NAME ctaphid COMMAND test_ctaphid)
 add_test(NAME fido_sha256 COMMAND test_fido_sha256)
 add_test(NAME fido_der COMMAND test_fido_der)
+add_test(NAME cred COMMAND test_cred)
+add_test(NAME ctap COMMAND test_ctap)

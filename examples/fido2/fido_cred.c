@@ -25,7 +25,10 @@ uint32_t fido_cred_crc32(const uint8_t *buf, size_t len)
 // caller of decode / by insert; a freshly encoded record is assumed).
 static bool record_valid(const fido_cred_record_t *rec)
 {
-    return (FIDO_CRED_SLOT_MIN <= rec->slot) && (rec->slot <= FIDO_CRED_SLOT_MAX) &&
+    // slot is a uint8_t table index (0..FIDO_CRED_SLOT_MAX): the lower
+    // bound is trivially satisfied, so only the upper bound is checked
+    // (keeping a `>= FIDO_CRED_SLOT_MIN` term trips -Wtype-limits).
+    return (rec->slot <= FIDO_CRED_SLOT_MAX) &&
            (1 <= rec->cred_id_len) && (rec->cred_id_len <= FIDO_CRED_CRED_ID_MAX) &&
            (rec->user_handle_len <= FIDO_CRED_USER_HANDLE_MAX) &&
            (rec->name_len <= FIDO_CRED_NAME_MAX) &&

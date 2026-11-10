@@ -1,11 +1,13 @@
 // fido_cred.h
 //
-// The FIDO2 credential store — the resident-credential database of the
-// FIDO2 app: one fixed-size record per credential key slot (ATECC608
-// slots 3-6; slot 1 is the device identity key), kept in RAM and
-// persisted one record per littlefs file (/f2_<slot>) by the app
-// (fido_hid.c). Pure C: the record format, its CRC-32, and the store
-// operations are host-tested in tests/test_cred.c.
+// The FIDO2 credential store — the credential metadata database of the
+// FIDO2 app: one fixed-size record per credential, kept in RAM and
+// persisted one record per littlefs file (/f2c_<idx>) by the app
+// (fido_hid.c). In the one-key model every record's "slot" field is the
+// table index (0..FIDO_CRED_MAX-1); all records sign with the single
+// 0xE0F3 key, so the record stores no key material. Pure C: the record
+// format, its CRC-32, and the store operations are host-tested in
+// tests/test_cred.c.
 //
 // A record is the littlefs file image itself: a 236-byte fixed layout
 // (no padding — the struct is a byte-exact serialization), the last
@@ -18,13 +20,16 @@
 #include <stddef.h>
 #include <stdint.h>
 
-// The credential key slots of the ATECC608 (the provisioning genkey
-// allowlist 1/3/4/5/6/12 minus slot 1 = device identity).
-#define FIDO_CRED_SLOT_MIN   3
-#define FIDO_CRED_SLOT_MAX   6
-// Four records — also the GET_INFO remainingDiscoverableCredentials
-// (FIDO_CTAP_MAX_CREDENTIALS must stay in sync).
-#define FIDO_CRED_MAX        4
+// In the one-key model the record's "slot" field is the table index
+// (0..FIDO_CRED_MAX-1), not a chip key slot: every record signs with the
+// single 0xE0F3 key, so the field only addresses the metadata row. The
+// key backend (fido_optiga.c) ignores it.
+#define FIDO_CRED_SLOT_MIN   0
+#define FIDO_CRED_SLOT_MAX   31
+// Thirty-two records — also the GET_INFO
+// remainingDiscoverableCredentials (FIDO_CTAP_MAX_CREDENTIALS must stay
+// in sync).
+#define FIDO_CRED_MAX        32
 
 // Field limits (the WebAuthn entity sizes we commit to storing):
 #define FIDO_CRED_CRED_ID_MAX      64   // credential ID
@@ -63,7 +68,7 @@ bool fido_cred_record_decode(const uint8_t img[FIDO_CRED_FILE_SIZE],
 // the same as the vault's /io_key.bin.
 uint32_t fido_cred_crc32(const uint8_t *buf, size_t len);
 
-// The in-RAM store: one record per slot index (0 = slot 3 ... 3 = slot 6)
+// The in-RAM store: one record per table index (0..FIDO_CRED_MAX-1)
 // plus optional persistence hooks the app installs (NULL in host tests =
 // RAM-only). insert()/erase() persist FIRST: a failed persistence leaves
 // the RAM store unchanged, so RAM and flash always agree.

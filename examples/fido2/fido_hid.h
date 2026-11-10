@@ -28,7 +28,7 @@ void fido_hid_init(bool enabled);
 void fido_usb_core1_task(void);
 
 // Core 0 (the card task), one call per main-loop iteration: the CTAP
-// dispatch, the ATECC608 key work, the CTAPHID timeouts, the console
+// dispatch, the OPTIGA key work, the CTAPHID timeouts, the console
 // and the status LED — the slow work that must stay off the USB
 // re-arm path.
 void fido_card_tick(void);
