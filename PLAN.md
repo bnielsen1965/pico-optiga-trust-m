@@ -585,23 +585,35 @@ bench-verified before any Phase 7 work begins.
   salt / CRC / magic / length rejection (`tests/test_vault_kdf.c`).
 
 ### 7.2 — FIDO2 (CTAP2 passkey over USB HID)
-- The large one. **Chip = credential-key vault:** P-256 pairs generated
-  on-chip at registration (private keys never leave); the chip signs the
-  32-byte assertion digests (external-digest ECDSA) and its public keys are
-  read back for the COSE_Key. **Pico = protocol:** CTAP2 (CBOR, user-presence
-  state machine, keep-alives) + a resident-credential store, over tinyusb HID.
-- **Reuse:** most of the protocol code (CBOR codec, CTAPHID transport, CTAP2
-  dispatch, credential store) is **chip-agnostic and can be ported directly
-  from `../pico-atecc608/example/fido2/`** — only the crypto backend changes
-  (`atcab_*` → `pico_optiga_*`). The host unit tests that ship with that
-  project (`test_cbor`, `test_ctaphid`, `test_ctap`, `test_cred`) transfer too.
-- Sub-steps: (a) tinyusb HID bring-up + CTAPHID transport (INIT / PING / WINK
-  / CANCEL); (b) CTAP2 `GET_INFO`; (c) `MAKE_CREDENTIAL` (on-chip keygen +
-  packed self-attestation); (d) `GET_ASSERTION` / `GET_NEXT_ASSERTION`
+- **One-key, non-resident model** (agreed): `0xE0F3` is the only free ECC
+  slot, so a **single P-256 key** is generated on-chip **once** and shared by
+  every credential AND the packed self-attestation. Credential identity is
+  decoupled from the key: each `MAKE_CREDENTIAL` mints a fresh random `credId`
+  + `userHandle` and stores `{credId -> userHandle}` in a small (32-entry)
+  littlefs table; every sign uses `0xE0F3`. This lets many FIDO accounts share
+  one on-chip key. The private key never leaves the chip; the 64-byte public
+  key is cached in littlefs (`/f2_idkey.pub`) because the OPTIGA has no
+  get-public-key command. The sync counter is littlefs `/f2_cnt` (resettable,
+  so `RESET` zeroes it).
+- **Reuse:** the protocol code (CBOR codec, CTAPHID transport, CTAP2 dispatch,
+  credential store) is **chip-agnostic and was ported 1:1 from
+  `../pico-atecc608/example/fido2/`** — only the crypto backend changed
+  (`atcab_*` → `pico_optiga_*` via `fido_optiga.c`). The host tests
+  (`test_cbor`, `test_ctaphid`, `test_ctap`, `test_cred`, `test_fido_sha256`,
+  `test_fido_der`) transfer and pass (10/10).
+- **Done (host-verified):** the ported stack + the DER↔raw sig converter +
+  the OPTIGA key-ops shim (`fido_optiga.c`) + the one-key store/CTAP
+  adaptation + `main.c` (startup contract + dual-core) + CMake wiring.
+  `fido2.uf2` builds; `be_genkey` is key-once (idempotent). A distinct OPTIGA
+  AAGUID is deferred (it would require regenerating the byte-exact KATs).
+- **Sub-steps (bench verification, next):** (a) tinyusb HID bring-up +
+  CTAPHID transport (INIT / PING / WINK / CANCEL); (b) `GET_INFO`; (c)
+  `MAKE_CREDENTIAL` (packed self-attestation); (d) `GET_ASSERTION`
   (on-chip sign + sync-counter increment); (e) `RESET`; (f) verify
   end-to-end against webauthn.io / a FIDO2 tester.
 - Requires: USB HID (tinyusb), a user-presence input (button, or the serial
-  console `up` command), littlefs for the credential store + sync counter.
+  console `up` command), littlefs for the credential table + pub-key cache +
+  sync counter.
 
 ### Reference note — `../pico-atecc608/`
 The sibling ATECC608 project (module + `console`/`vault`/`fido2` examples).
