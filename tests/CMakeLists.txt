@@ -40,7 +40,18 @@ add_executable(test_vault_gcm
 target_include_directories(test_vault_gcm PRIVATE
     "${PICO_OPTIGA_SRC}/examples/vault")
 
+# Vault entry-key parameterization (determinism + wrong-PIN/name/salt
+# rejection). Stands in for the chip's HKDF with a host SHA-256 of the same
+# three inputs; the vault GCM (above) is the vehicle.
+add_executable(test_vault_kdf
+    test_vault_kdf.c
+    "${PICO_OPTIGA_SRC}/examples/vault/vault_gcm.c")
+target_include_directories(test_vault_kdf PRIVATE
+    "${PICO_OPTIGA_SRC}/examples/vault"
+    "${PICO_OPTIGA_SRC}/include")
+
 enable_testing()
 add_test(NAME status_mapping COMMAND test_optiga_status)
 add_test(NAME sha256 COMMAND test_sha256)
 add_test(NAME vault_gcm COMMAND test_vault_gcm)
+add_test(NAME vault_kdf COMMAND test_vault_kdf)
