@@ -56,7 +56,11 @@ file(GLOB _example_dirs "${CMAKE_CURRENT_SOURCE_DIR}/*")
 foreach(_dir IN LISTS _example_dirs)
     if(IS_DIRECTORY "${_dir}" AND EXISTS "${_dir}/main.c")
         get_filename_component(_name "${_dir}" NAME)
-        add_executable(${_name} "${_dir}/main.c")
+        # Every .c in the example dir is part of the app (main.c plus any
+        # local helpers, e.g. vault/vault_gcm.c). The pico-littlefs submodule
+        # has no top-level main.c, so it is skipped by the EXISTS check above.
+        file(GLOB _example_srcs "${_dir}/*.c")
+        add_executable(${_name} ${_example_srcs})
         set(_example_deps pico_stdlib hardware_i2c)
         # The Infineon stack calls into the PAL (pico_optiga), and since Phase
         # 4 pico_optiga calls into the stack (optiga_util_*) — a circular
