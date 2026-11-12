@@ -12,6 +12,14 @@ generation) to the secure element.
 See [examples/README.md](examples/README.md) for the example applications,
 including a complete FIDO2 (CTAP2) passkey authenticator.
 
+## AI Transparency
+
+This library was developed using AI.
+
+I am using an AMD Radeon AI Pro R9700 32GB GPU, a quantized Qwen3.8 27B model, a custom 
+build of llama.cpp, and the OpenCode coding agent.
+
+
 ## Hardware
 
 | Item | Detail |
