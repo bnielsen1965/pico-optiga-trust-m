@@ -129,7 +129,11 @@ static int be_rand(void *dev, uint8_t *buf, uint32_t len)
 static uint32_t be_clock(void *dev)
 {
     (void)dev;
-    return to_ms_since_boot(0);
+    // Uptime in ms (the CTAP RESET 10-s window, 2.3 §6.6). to_ms_since_boot
+    // CONVERTS a timestamp to ms-since-boot, so the argument must be the
+    // current absolute time — to_ms_since_boot(0) is always 0 and would make
+    // the window check a no-op. Matches the reference's osal_time_millis().
+    return to_ms_since_boot(get_absolute_time());
 }
 
 // --- public API --------------------------------------------------------------

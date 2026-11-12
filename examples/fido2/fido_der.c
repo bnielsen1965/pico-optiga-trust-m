@@ -24,19 +24,26 @@ static void align32(const uint8_t *src, size_t len, uint8_t out[32])
 bool fido_der_to_raw_rs(const uint8_t *der, size_t der_len, uint8_t raw[FIDO_DER_RS_LEN])
 {
     size_t i = 0;
-    if (der_len < 8u || der[i++] != 0x30u) {
-        return false;             // SEQUENCE
+    if (der_len < 8u) {
+        return false;
     }
-    // SEQUENCE length: short form (P-256 sigs are < 128 bytes) or long form.
-    if (der[i] & 0x80u) {
-        const size_t n = der[i] & 0x7fu;
-        if ((n < 1) || (n > 2) || ((i + 1u + n) > der_len)) {
-            return false;
+    // The OPTIGA Trust M returns the ECDSA signature as bare INTEGERs
+    // (02 <len> <r> 02 <len> <s>) with NO 0x30 SEQUENCE header. Accept both
+    // the full DER form (SEQUENCE-wrapped) and the chip's bare-INTEGER form.
+    if (der[0] == 0x30u) {
+        i = 1u;
+        // SEQUENCE length: short form (P-256 sigs are < 128 bytes) or long form.
+        if (der[i] & 0x80u) {
+            const size_t n = der[i] & 0x7fu;
+            if ((n < 1) || (n > 2) || ((i + 1u + n) > der_len)) {
+                return false;
+            }
+            i += 1u + n;
+        } else {
+            i += 1u;
         }
-        i += 1u + n;
-    } else {
-        i += 1u;
     }
+    // else: bare-INTEGER form (no SEQUENCE header), i stays 0.
     // INTEGER r
     if (((i + 2u) > der_len) || (der[i++] != 0x02u)) {
         return false;

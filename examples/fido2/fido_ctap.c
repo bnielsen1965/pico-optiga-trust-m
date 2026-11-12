@@ -1062,7 +1062,9 @@ static int ga_assert(fido_ctap_ctx_t *ctx, const fido_ga_enum_t *en, int idx,
     authdata[n++] = (uint8_t)ctr;
 
     // The assertion signature: the credential key over
-    // SHA-256(authData ‖ clientDataHash) (WebAuthn L3 §6.1).
+    // SHA-256(authData ‖ clientDataHash) (WebAuthn L3 §6.3.3 step 11 /
+    // §7.2 step 21: "the concatenation authenticatorData || hash"). Same
+    // order as the attestation signature.
     uint8_t digest[FIDO_SHA256_DIGEST_LEN];
     fido_sha256_ctx_t sh;
     fido_sha256_init(&sh);

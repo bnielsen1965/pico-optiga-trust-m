@@ -61,6 +61,24 @@ static void trace_i2c(const char *op, const pal_i2c_t *p_i2c_context,
 #define TRUSTM_I2C_INIT_HZ     100000u
 #define PAL_I2C_MASTER_MAX_BITRATE (400U) /* kHz */
 
+/* Per-character I2C timeout (microseconds).
+ *
+ * The Pico SDK's i2c_read_blocking()/i2c_write_blocking() pass a NULL
+ * timeout check to the driver, so their two busy-wait loops
+ * (wait-for-TX-FIFO-space and wait-for-RX-data) are UNBOUNDED: if the
+ * Trust M stalls the bus mid-transfer (clock-stretch overrun, a NAK after
+ * the address byte, SDA/SCL held) the core spins forever and the whole
+ * superloop hangs. We observed exactly this on the 0xE0F3 sign's final
+ * DATA-register read.
+ *
+ * Use the *_timeout_per_char_us() variants so a stalled byte maps to
+ * PICO_ERROR_TIMEOUT (rc < 0), which this file already reports as
+ * PAL_I2C_EVENT_BUSY and lets the IFX physical layer retry on its 1 ms
+ * polling cadence. 10 ms/char is far above the chip's worst-case
+ * clock-stretch per byte, so legitimate transfers are unaffected.
+ */
+#define PAL_I2C_TIMEOUT_PER_CHAR_US (10000U)
+
 static volatile uint32_t g_entry_count = 0;
 static pal_i2c_t *gp_pal_i2c_current_ctx;
 
@@ -80,6 +98,32 @@ static pal_status_t pal_i2c_acquire(const void *p_i2c_context) {
 static void pal_i2c_release(const void *p_i2c_context) {
     (void)p_i2c_context;
     g_entry_count = 0;
+}
+
+/* Pre-transfer bus recovery.
+ *
+ * The Pico SDK's i2c_read_blocking_internal() contains an UNBOUNDED
+ *   while (!i2c_get_write_available(i2c)) tight_loop_contents();
+ * loop (no timeout_check) that waits for TX-FIFO space. If the I2C core's
+ * TX FIFO gets stuck (e.g. after an aborted transfer, a clock-stretch
+ * overrun, or a NAK mid-burst) this loop spins forever and the whole
+ * superloop hangs. We observed exactly this on the 0xE0F3 sign's final
+ * DATA-register read (80-byte read entered, never returned).
+ *
+ * Before every transfer we check whether the TX FIFO is drained. If it is
+ * stuck (no write available), we re-initialize the I2C core and re-pin the
+ * GPIOs so the next transfer starts from a clean state. In the normal case
+ * the TX FIFO is empty and this is a single register read (no cost).
+ */
+static void pal_i2c_bus_recovery(i2c_inst_t *i2c) {
+    if (!i2c_get_write_available(i2c)) {
+        // TX FIFO is stuck full: reset the I2C core and re-pin the GPIOs.
+        i2c_init(i2c, TRUSTM_I2C_INIT_HZ);
+        gpio_set_function(TRUSTM_I2C_SDA, GPIO_FUNC_I2C);
+        gpio_set_function(TRUSTM_I2C_SCL, GPIO_FUNC_I2C);
+        gpio_pull_up(TRUSTM_I2C_SDA);
+        gpio_pull_up(TRUSTM_I2C_SCL);
+    }
 }
 
 void invoke_upper_layer_callback(const pal_i2c_t *p_pal_i2c_ctx, optiga_lib_status_t event) {
@@ -127,8 +171,13 @@ pal_status_t pal_i2c_write(const pal_i2c_t *p_i2c_context, uint8_t *p_data, uint
         //   - the last parameter is *nostop*: false = issue a STOP after
         //     the transfer (1.x called this "ack" with opposite
         //     polarity).
-        int rc = i2c_write_blocking(
-            i2c, (uint8_t)p_i2c_context->slave_address, p_data, length, false);
+        // Recover from a stuck I2C core before the write (see
+        // pal_i2c_bus_recovery).
+        pal_i2c_bus_recovery(i2c);
+
+        int rc = i2c_write_timeout_per_char_us(
+            i2c, (uint8_t)p_i2c_context->slave_address, p_data, length, false,
+            PAL_I2C_TIMEOUT_PER_CHAR_US);
 
 #ifdef PICO_OPTIGA_PAL_TRACE
         trace_i2c("W", p_i2c_context, p_data, length, rc);
@@ -167,10 +216,16 @@ pal_status_t pal_i2c_read(const pal_i2c_t *p_i2c_context, uint8_t *p_data, uint1
         gp_pal_i2c_current_ctx = (pal_i2c_t *)p_i2c_context;
         i2c_inst_t *i2c = (i2c_inst_t *)p_i2c_context->p_i2c_hw_config;
 
+        // Recover from a stuck I2C core before the read (see
+        // pal_i2c_bus_recovery). Without this the read path's unbounded
+        // TX-FIFO-space wait can hang the superloop forever.
+        pal_i2c_bus_recovery(i2c);
+
         // Blocking read (master NAKs the last byte, then STOP). 7-bit
         // address unshifted, last arg nostop=false (see pal_i2c_write).
-        int rc = i2c_read_blocking(
-            i2c, (uint8_t)p_i2c_context->slave_address, p_data, length, false);
+        int rc = i2c_read_timeout_per_char_us(
+            i2c, (uint8_t)p_i2c_context->slave_address, p_data, length, false,
+            PAL_I2C_TIMEOUT_PER_CHAR_US);
 
 #ifdef PICO_OPTIGA_PAL_TRACE
         trace_i2c("R", p_i2c_context, p_data, length, rc);
