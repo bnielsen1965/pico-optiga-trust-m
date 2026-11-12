@@ -2,7 +2,7 @@
 # Examples — proof-of-concept applications built on the pico_optiga module.
 #
 # This is a SEPARATE CMake scope from the module: the top-level CMakeLists.txt
-# builds only optiga_trust_m + pico_optiga and does not reference anything in
+# builds only optiga_trust_m_lib + pico_optiga and does not reference anything in
 # this directory. Keeping the examples here (and their deps as submodules
 # under examples/) means embedding the module in a project never pulls in
 # example-only code.
@@ -68,9 +68,9 @@ foreach(_dir IN LISTS _example_dirs)
         # archive dependency that single-pass archive resolution cannot
         # satisfy in either order, so both go into a --start-group/--end-group
         # link group.
-        if(TARGET optiga_trust_m AND TARGET pico_optiga)
+        if(TARGET optiga_trust_m_lib AND TARGET pico_optiga)
             list(APPEND _example_deps
-                 "-Wl,--start-group;optiga_trust_m;pico_optiga;-Wl,--end-group")
+                 "-Wl,--start-group;optiga_trust_m_lib;pico_optiga;-Wl,--end-group")
         elseif(TARGET pico_optiga)
             list(APPEND _example_deps pico_optiga)
         endif()

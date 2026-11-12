@@ -24,9 +24,9 @@ SOFTWARE.
 
 Note on dependencies:
 
-The Infineon OPTIGA Trust M Host Library (submodule in
-`third_party/optiga-trust-m`) is under Infineon's own license and is
-fetched via git submodule — it is not redistributed as part of this
-repo's source. The MIT license above covers only the code in this
+The Infineon OPTIGA Trust M Host Library is fetched at build time from
+[github.com/Infineon/optiga-trust-m](https://github.com/Infineon/optiga-trust-m)
+via CMake `FetchContent` — it is never vendored in this repo and is under
+Infineon's own license. The MIT license above covers only the code in this
 repository (the `pico_optiga` library, the PAL port, the examples,
 and the tests).

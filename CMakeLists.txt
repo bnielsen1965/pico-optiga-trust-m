@@ -10,7 +10,7 @@
 #
 # Layers (see PLAN.md):
 #   applications  ->  pico_optiga (this project's API)
-#                 ->  optiga_trust_m (Infineon host library, third_party/)
+#                 ->  optiga_trust_m_lib (Infineon host library, fetched at build time)
 #                 ->  PAL (./pal - Pico port of the Infineon platform layer)
 #                 ->  pico-sdk i2c driver  ->  RP2350 I2C0  ->  Trust M
 #
@@ -82,24 +82,42 @@ set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 
 # ---------------------------------------------------------------------------
-# Infineon OPTIGA Trust M host library (third_party/optiga-trust-m)
+# Infineon OPTIGA Trust M host library
 #
-# The upstream project ships no top-level CMake target, so we build the core
-# sources (src/cmd, src/common, src/comms, src/crypt, src/util) into a static
-# library ourselves. The PAL (platform abstraction layer) for the Pico is
-# provided by this project in ./pal (see PLAN.md, Phase 2).
+# Fetched at build time (never vendored in this repo). The upstream project
+# ships no top-level CMake target, so we build the core sources (src/cmd,
+# src/common, src/comms, src/crypt, src/util) into a static library ourselves.
+# The PAL (platform abstraction layer) for the Pico is provided by this
+# project in ./pal.
 #
 # Without PICO_OPTIGA_SHIELDED_CONNECTION the library does not require
 # Mbed TLS at all.
+#
+# Resolution order:
+#   1. -DOPTIGA_TRUST_M_SOURCE_DIR=/path/to/local  (air-gapped / explicit)
+#   2. FetchContent from GitHub (pinned tag)
 # ---------------------------------------------------------------------------
-set(OPTIGA_TRUST_M_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/optiga-trust-m")
+if(NOT DEFINED OPTIGA_TRUST_M_SOURCE_DIR)
+    message(STATUS "OPTIGA Trust M host library not found locally - fetching from GitHub")
+    include(FetchContent)
+    set(FETCHCONTENT_BASE_DIR "${CMAKE_CURRENT_BINARY_DIR}/_deps" CACHE PATH "" FORCE)
+    FetchContent_Populate(optiga_trust_m
+                          GIT_REPOSITORY "https://github.com/Infineon/optiga-trust-m.git"
+                          GIT_TAG        "main"
+                          GIT_SHALLOW    TRUE)
+    set(OPTIGA_TRUST_M_DIR "${optiga_trust_m_SOURCE_DIR}")
+else()
+    set(OPTIGA_TRUST_M_DIR "${OPTIGA_TRUST_M_SOURCE_DIR}")
+endif()
+
+message(STATUS "Using OPTIGA Trust M host library at: ${OPTIGA_TRUST_M_DIR}")
 
 if(EXISTS "${OPTIGA_TRUST_M_DIR}/src")
     file(GLOB_RECURSE OPTIGA_TRUST_M_SOURCES CONFIGURE_DEPENDS
          "${OPTIGA_TRUST_M_DIR}/src/*.c")
 
-    add_library(optiga_trust_m STATIC ${OPTIGA_TRUST_M_SOURCES})
-    target_include_directories(optiga_trust_m PUBLIC
+    add_library(optiga_trust_m_lib STATIC ${OPTIGA_TRUST_M_SOURCES})
+    target_include_directories(optiga_trust_m_lib PUBLIC
         "${OPTIGA_TRUST_M_DIR}/include"
         "${OPTIGA_TRUST_M_DIR}/include/cmd"
         "${OPTIGA_TRUST_M_DIR}/include/common"
@@ -107,7 +125,7 @@ if(EXISTS "${OPTIGA_TRUST_M_DIR}/src")
         "${OPTIGA_TRUST_M_DIR}/include/ifx_i2c"
         "${OPTIGA_TRUST_M_DIR}/include/pal")
     # The upstream sources are not warning-clean under the Pico SDK flags.
-    target_compile_options(optiga_trust_m PRIVATE -w)
+    target_compile_options(optiga_trust_m_lib PRIVATE -w)
     # The vendor's default config (optiga_lib_config_m_v3.h) enables the
     # shielded connection, which requires a crypto PAL (pal_crypt_*,
     # Mbed TLS based). Select the Pico config instead (plain IFX I2C,
@@ -118,17 +136,17 @@ if(EXISTS "${OPTIGA_TRUST_M_DIR}/src")
         message(WARNING
             "PICO_OPTIGA_SHIELDED_CONNECTION=ON: the vendor v3 config is "
             "used; Mbed TLS 4.x and a crypto PAL (pal_crypt_*) must be "
-            "provided. See PLAN.md, Phase 6.")
+            "provided.")
     else()
-        target_include_directories(optiga_trust_m PRIVATE
+        target_include_directories(optiga_trust_m_lib PRIVATE
             "${CMAKE_CURRENT_SOURCE_DIR}/include")
-        target_compile_definitions(optiga_trust_m PUBLIC
+        target_compile_definitions(optiga_trust_m_lib PUBLIC
             OPTIGA_LIB_EXTERNAL="optiga_lib_config_pico.h")
     endif()
 else()
-    message(WARNING
-        "Infineon OPTIGA Trust M host library not found at ${OPTIGA_TRUST_M_DIR}.\n"
-        "Run:  git submodule update --init third_party/optiga-trust-m")
+    message(FATAL_ERROR
+        "Infineon OPTIGA Trust M host library source not found at ${OPTIGA_TRUST_M_DIR}.\n"
+        "Set -DOPTIGA_TRUST_M_SOURCE_DIR=/path/to/optiga-trust-m for air-gapped builds.")
 endif()
 
 # ---------------------------------------------------------------------------
@@ -151,11 +169,11 @@ if(PICO_OPTIGA_SOURCES)
     # library: it consumes the library's headers but links *below* it
     # (the stack calls into the PAL). The include directories are added
     # directly instead of via a link dependency, because
-    # target_link_libraries(pico_optiga ... optiga_trust_m) would put
-    # libpico_optiga.a *before* liboptiga_trust_m.a on the final link
+    # target_link_libraries(pico_optiga ... optiga_trust_m_lib) would put
+    # libpico_optiga.a *before* liboptiga_trust_m_lib.a on the final link
     # line and break single-pass archive resolution (the stack's
     # pal_* references would go unresolved).
-    if(TARGET optiga_trust_m)
+    if(TARGET optiga_trust_m_lib)
         target_include_directories(pico_optiga SYSTEM PUBLIC
             "${OPTIGA_TRUST_M_DIR}/include"
             "${OPTIGA_TRUST_M_DIR}/include/cmd"
@@ -174,7 +192,7 @@ endif()
 
 # ---------------------------------------------------------------------------
 # Examples (examples/CMakeLists.txt) — a separate CMake scope so the module
-# build (optiga_trust_m + pico_optiga) never pulls in example-only
+# build (optiga_trust_m_lib + pico_optiga) never pulls in example-only
 # dependencies (pico-littlefs now; tinyusb / command-line later). The examples
 # scope adds those deps and builds every examples/<name>/main.c into a
 # flashable .uf2. Stdio goes over UART0 (CP210x USB-serial bridge on the

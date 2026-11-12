@@ -47,8 +47,9 @@ Design consequences:
 ## Software stack
 
 - **Pico SDK 2.3.1** — bare metal, single core, no OS.
-- **Infineon OPTIGA Trust M Host Library** (submodule in
-  `third_party/optiga-trust-m`) — the IFX I2C protocol stack plus the
+- **Infineon OPTIGA Trust M Host Library** (fetched at build time from
+  [GitHub](https://github.com/Infineon/optiga-trust-m) via CMake
+  `FetchContent`; never vendored) — the IFX I2C protocol stack plus the
   high-level `optiga_util` / `optiga_crypt` APIs.
 - **No Mbed TLS.** The shielded (encrypted) I2C path is compiled out via
   the absence of `OPTIGA_COMMS_SHIELDED_CONNECTION` — no crypto PAL, no TLS.
@@ -88,7 +89,7 @@ Design consequences:
 │   ├── usbmon_capture.sh     # USB monitor capture
 │   └── usb_tcpdump.sh        # USB tcpdump capture
 ├── third_party/
-│   └── optiga-trust-m/       # Infineon host library (git submodule)
+│   └── (build-time fetches land here in the build dir, not the source tree)
 └── docs/
     └── BRINGUP.md            # OPTIGA Trust M bring-up checklist
 ```
@@ -99,7 +100,7 @@ Design consequences:
 
 ```sh
 git submodule add https://github.com/bnielsen1965/pico-optiga-trust-m.git libs/pico-optiga-trust-m
-git submodule update --init --recursive
+git submodule update --init  # pulls pico-littlefs; the Infineon lib is fetched at build time
 ```
 
 In your top-level `CMakeLists.txt`:
@@ -117,7 +118,7 @@ target_link_libraries(app PRIVATE pico_optiga::pico_optiga)
 | Library source | `src/` (2 files) |
 | PAL port | `pal/` (8 files) |
 | CMake | The `pico_optiga` library section from `CMakeLists.txt` |
-| Infineon submodule | `third_party/optiga-trust-m` (pin the same commit) |
+| Infineon library | Fetched at build time from [Infineon/optiga-trust-m](https://github.com/Infineon/optiga-trust-m) (or `-DOPTIGA_TRUST_M_SOURCE_DIR=`) |
 
 ## Building
 
@@ -125,12 +126,15 @@ Requirements: CMake ≥ 3.22, a GNU Arm Embedded toolchain
 (`arm-none-eabi-gcc`), and the Pico SDK (2.3.1).
 
 ```sh
-# 1. Get the repo with submodules
-git clone --recurse-submodules https://github.com/bnielsen1965/pico-optiga-trust-m.git
+# 1. Get the repo (the Infineon library is fetched at build time)
+git clone https://github.com/bnielsen1965/pico-optiga-trust-m.git
 cd pico-optiga-trust-m
+git submodule update --init  # pico-littlefs (FIDO2 credential store)
 
 # 2. Configure
 cmake --preset pico2 -DPICO_SDK_PATH=/path/to/pico-sdk
+#    (the OPTIGA Trust M host library is fetched automatically from GitHub;
+#     for air-gapped builds: -DOPTIGA_TRUST_M_SOURCE_DIR=/path/to/local)
 
 # 3. Build all examples
 cmake --build build/pico2 -j
