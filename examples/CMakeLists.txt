@@ -16,17 +16,33 @@
 # port.
 
 # ---------------------------------------------------------------------------
-# Example-only dependency: pico-littlefs (examples/pico-littlefs submodule).
+# Example-only dependency: pico-littlefs (fetched at build time).
 # Pico-side littlefs for the apps that persist to the shared volume at flash
 # 0x80000 (384 x 4 KB = 1.5 MB) — the layout the sibling pico-atecc608
 # project already wrote to this flash. Added only in this scope.
+#
+# Resolution order:
+#   1. -DPICO_LITTLEFS_SOURCE_DIR=/path/to/local  (air-gapped / explicit)
+#   2. FetchContent from GitHub
 # ---------------------------------------------------------------------------
-if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/pico-littlefs/CMakeLists.txt")
-    add_subdirectory(pico-littlefs)
+if(NOT DEFINED PICO_LITTLEFS_SOURCE_DIR)
+    message(STATUS "pico-littlefs not found locally - fetching from GitHub")
+    include(FetchContent)
+    FetchContent_Populate(pico_littlefs
+                          GIT_REPOSITORY "https://github.com/bnielsen1965/pico-littlefs.git"
+                          GIT_TAG        "main"
+                          GIT_SHALLOW    TRUE)
+    set(PICO_LITTLEFS_DIR "${pico_littlefs_SOURCE_DIR}")
 else()
-    message(WARNING
-        "pico-littlefs not found at examples/pico-littlefs.\n"
-        "Run:  git submodule update --init --recursive examples/pico-littlefs")
+    set(PICO_LITTLEFS_DIR "${PICO_LITTLEFS_SOURCE_DIR}")
+endif()
+
+if(EXISTS "${PICO_LITTLEFS_DIR}/CMakeLists.txt")
+    add_subdirectory("${PICO_LITTLEFS_DIR}" "${CMAKE_BINARY_DIR}/_deps/pico-littlefs-build")
+else()
+    message(FATAL_ERROR
+        "pico-littlefs not found at ${PICO_LITTLEFS_DIR}.\n"
+        "Set -DPICO_LITTLEFS_SOURCE_DIR=/path/to/pico-littlefs for air-gapped builds.")
 endif()
 
 # ---------------------------------------------------------------------------

@@ -1,3 +1,0 @@
-[submodule "examples/pico-littlefs"]
-	path = examples/pico-littlefs
-	url = https://github.com/bnielsen1965/pico-littlefs.git

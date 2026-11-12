@@ -56,8 +56,9 @@ Design consequences:
 - Our own **PAL** (`pal/`) ports the Infineon platform-abstraction layer
   onto the Pico SDK (I2C, timers, events, logger, datastore, memory).
 - **TinyUSB** (via Pico SDK) for the FIDO2 example's pure-HID CTAP2 transport.
-- **pico-littlefs** (submodule in `examples/pico-littlefs`) for the FIDO2
-  credential store.
+- **pico-littlefs** (fetched at build time from
+  [bnielsen1965/pico-littlefs](https://github.com/bnielsen1965/pico-littlefs))
+  for the FIDO2 credential store.
 
 ## Repository layout
 
@@ -80,16 +81,13 @@ Design consequences:
 │   ├── crypt/                # Phase 5: ECDSA sign/verify
 │   ├── vault/                # Phase 5: PIN-gated password store
 │   ├── fs_audit/             # Littlefs filesystem audit
-│   ├── fido2/                # FIDO2 (CTAP2) passkey authenticator
-│   └── pico-littlefs/        # (submodule)
+│   └── fido2/                # FIDO2 (CTAP2) passkey authenticator
 ├── tests/                    # Native host unit tests (own CMake project)
 ├── tools/                    # Bench + debug scripts
 │   ├── fido2_bench.py        # FIDO2 bench client (USB HID + serial)
 │   ├── BENCH_STATUS.md       # Bench status + root-cause table
 │   ├── usbmon_capture.sh     # USB monitor capture
 │   └── usb_tcpdump.sh        # USB tcpdump capture
-├── third_party/
-│   └── (build-time fetches land here in the build dir, not the source tree)
 └── docs/
     └── BRINGUP.md            # OPTIGA Trust M bring-up checklist
 ```
@@ -100,7 +98,7 @@ Design consequences:
 
 ```sh
 git submodule add https://github.com/bnielsen1965/pico-optiga-trust-m.git libs/pico-optiga-trust-m
-git submodule update --init  # pulls pico-littlefs; the Infineon lib is fetched at build time
+# (no nested submodules — all deps are fetched at build time)
 ```
 
 In your top-level `CMakeLists.txt`:
@@ -118,7 +116,8 @@ target_link_libraries(app PRIVATE pico_optiga::pico_optiga)
 | Library source | `src/` (2 files) |
 | PAL port | `pal/` (8 files) |
 | CMake | The `pico_optiga` library section from `CMakeLists.txt` |
-| Infineon library | Fetched at build time from [Infineon/optiga-trust-m](https://github.com/Infineon/optiga-trust-m) (or `-DOPTIGA_TRUST_M_SOURCE_DIR=`) |
+| Infineon library | Fetched at build time from [Infineon/optiga-trust-m](https://github.com/Infineon/optiga-trust-m) |
+| pico-littlefs | Fetched at build time from [bnielsen1965/pico-littlefs](https://github.com/bnielsen1965/pico-littlefs) (examples only) |
 
 ## Building
 
@@ -126,15 +125,16 @@ Requirements: CMake ≥ 3.22, a GNU Arm Embedded toolchain
 (`arm-none-eabi-gcc`), and the Pico SDK (2.3.1).
 
 ```sh
-# 1. Get the repo (the Infineon library is fetched at build time)
+# 1. Get the repo (all dependencies are fetched at build time)
 git clone https://github.com/bnielsen1965/pico-optiga-trust-m.git
 cd pico-optiga-trust-m
-git submodule update --init  # pico-littlefs (FIDO2 credential store)
 
 # 2. Configure
 cmake --preset pico2 -DPICO_SDK_PATH=/path/to/pico-sdk
-#    (the OPTIGA Trust M host library is fetched automatically from GitHub;
-#     for air-gapped builds: -DOPTIGA_TRUST_M_SOURCE_DIR=/path/to/local)
+#    (the OPTIGA Trust M host library and pico-littlefs are fetched
+#     automatically from GitHub; for air-gapped builds:
+#     -DOPTIGA_TRUST_M_SOURCE_DIR=/path/to/optiga-trust-m
+#     -DPICO_LITTLEFS_SOURCE_DIR=/path/to/pico-littlefs)
 
 # 3. Build all examples
 cmake --build build/pico2 -j
