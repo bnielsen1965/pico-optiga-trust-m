@@ -9,10 +9,8 @@ applications can build on: probe the chip, read its identity, use its data
 objects, and offload cryptography (ECDSA P-256 sign/verify, random, key
 generation) to the secure element.
 
-The `examples/fido2/` app is a complete **FIDO2 (CTAP2) passkey
-authenticator** — it presents to a host as a pure-HID USB security key
-(VID/PID `2E8A:000B`) and registers/logs in as a spec-compliant passkey in
-modern browsers (verified on webauthn.io).
+See [examples/README.md](examples/README.md) for the example applications,
+including a complete FIDO2 (CTAP2) passkey authenticator.
 
 ## Hardware
 
@@ -26,7 +24,6 @@ modern browsers (verified on webauthn.io).
 | Power | Trust M **VDD tied to the Pico's 3.3 V**; **RESET wired to GP22** (active low) |
 | Power-on | I2C is ready **15 ms** after power-on; firmware warm-resets the chip on GP22 at boot (1 ms pulse, 25 ms settle) |
 | Debug serial | **CP210x USB-UART bridge on the Pico's UART0** (GPIO0 TX / GPIO1 RX) — stdio at 115200 8N1 |
-| FIDO2 button | Optional momentary switch **GP10 → GND** (internal pull-up) for user presence |
 | Datasheet | [Infineon OPTIGA Trust M (SLS32AIA) datasheet](https://www.infineon.com/dgdl/Infineon-optiga_trust_m-DataSheet-SLS32AIA-DataSheets-SLS32AIA-Rev_1_00.pdf?fileId=5546d4526f3a00c4016f5a10d3e56b7b) |
 
 Design consequences:
@@ -36,8 +33,6 @@ Design consequences:
   must be driven high *before* its output driver is enabled (the RP2350
   GPIO OUT register defaults to 0 — a naive `gpio_set_dir(OUT)` emits a
   low spike on RST).
-- Examples are built with `pico_enable_stdio_uart(1)` /
-  `pico_enable_stdio_usb(0)`.
 - Pull-ups: the Trust M module carries them on board; the firmware also
   enables the Pico's weak internal pull-ups as a safety net.
 - The PAL I2C layer uses `i2c_{read,write}_timeout_per_char_us()` (10 ms/char)
@@ -55,10 +50,6 @@ Design consequences:
   the absence of `OPTIGA_COMMS_SHIELDED_CONNECTION` — no crypto PAL, no TLS.
 - Our own **PAL** (`pal/`) ports the Infineon platform-abstraction layer
   onto the Pico SDK (I2C, timers, events, logger, datastore, memory).
-- **TinyUSB** (via Pico SDK) for the FIDO2 example's pure-HID CTAP2 transport.
-- **pico-littlefs** (fetched at build time from
-  [bnielsen1965/pico-littlefs](https://github.com/bnielsen1965/pico-littlefs))
-  for the FIDO2 credential store.
 
 ## Repository layout
 
@@ -66,28 +57,14 @@ Design consequences:
 ├── CMakeLists.txt            # Top-level build (module + examples)
 ├── CMakePresets.json         # "pico2" preset
 ├── LICENSE                   # MIT
-├── README.md                 # This file
+├── README.md                 # This file (the module)
 ├── include/
 │   └── pico_optiga/          # Public API (optiga.h, sha256.h)
 ├── src/                      # pico_optiga implementation
 ├── pal/                      # Pico PAL for the Infineon library
-├── examples/
-│   ├── i2c_probe/            # Phase 1: raw I2C bus scan
-│   ├── optiga_open/          # Phase 2: IFX open/close
-│   ├── optiga_hello/         # Phase 3: chip identity
-│   ├── optiga_metadata/      # Phase 4: metadata read
-│   ├── data_objects/         # Phase 5: data object read/write
-│   ├── random/               # Phase 5: chip TRNG
-│   ├── crypt/                # Phase 5: ECDSA sign/verify
-│   ├── vault/                # Phase 5: PIN-gated password store
-│   ├── fs_audit/             # Littlefs filesystem audit
-│   └── fido2/                # FIDO2 (CTAP2) passkey authenticator
+├── examples/                 # Example applications (see examples/README.md)
 ├── tests/                    # Native host unit tests (own CMake project)
 ├── tools/                    # Bench + debug scripts
-│   ├── fido2_bench.py        # FIDO2 bench client (USB HID + serial)
-│   ├── BENCH_STATUS.md       # Bench status + root-cause table
-│   ├── usbmon_capture.sh     # USB monitor capture
-│   └── usb_tcpdump.sh        # USB tcpdump capture
 └── docs/
     └── BRINGUP.md            # OPTIGA Trust M bring-up checklist
 ```
@@ -117,7 +94,6 @@ target_link_libraries(app PRIVATE pico_optiga::pico_optiga)
 | PAL port | `pal/` (8 files) |
 | CMake | The `pico_optiga` library section from `CMakeLists.txt` |
 | Infineon library | Fetched at build time from [Infineon/optiga-trust-m](https://github.com/Infineon/optiga-trust-m) |
-| pico-littlefs | Fetched at build time from [bnielsen1965/pico-littlefs](https://github.com/bnielsen1965/pico-littlefs) (examples only) |
 
 ## Building
 
@@ -131,72 +107,25 @@ cd pico-optiga-trust-m
 
 # 2. Configure
 cmake --preset pico2 -DPICO_SDK_PATH=/path/to/pico-sdk
-#    (the OPTIGA Trust M host library and pico-littlefs are fetched
-#     automatically from GitHub; for air-gapped builds:
-#     -DOPTIGA_TRUST_M_SOURCE_DIR=/path/to/optiga-trust-m
-#     -DPICO_LITTLEFS_SOURCE_DIR=/path/to/pico-littlefs)
+#    (the OPTIGA Trust M host library is fetched automatically from GitHub;
+#     for air-gapped builds: -DOPTIGA_TRUST_M_SOURCE_DIR=/path/to/local)
 
-# 3. Build all examples
+# 3. Build the library only (no examples)
+cmake --build build/pico2 --target pico_optiga -j
+
+# 4. Build everything (library + examples)
 cmake --build build/pico2 -j
-
-# 4. Build just the FIDO2 authenticator
-cmake --build build/pico2 --target fido2
-
-# 5. Flash
-#    copy build/pico2/<example>.uf2 to the Pico's RPI-RP2 drive
-#    (hold BOOTSEL, plug in USB, release, copy, unplug, replug)
 ```
 
-## FIDO2 passkey authenticator
+## Host unit tests
 
-The `examples/fido2/` app is a complete CTAP2 passkey:
-
-- **Transport:** pure-HID USB (VID/PID `2E8A:000B`, usage page `0xF1D0`,
-  two raw 64-byte reports, no report IDs). No CDC, no vendor bulk.
-- **Commands:** INIT, PING, WINK, GET_INFO, MAKE_CREDENTIAL,
-  GET_ASSERTION, RESET, CANCEL.
-- **Attestation:** self ("packed") — the credential key signs
-  `SHA-256(authData ‖ clientDataHash)`. No `x5c` certificate chain.
-- **Crypto:** all ECDSA P-256 operations offloaded to the OPTIGA Trust M
-  (on-chip key, on-chip sign). The private key never leaves the secure
-  element.
-- **Key model:** single keypair (OID 0xE0F3) for all signing. The public
-  key is cached in littlefs after first generation.
-- **Credential store:** 4 slots in littlefs (`/f2c_0` … `/f2c_3`),
-  survives power cycles and reflashes.
-- **User presence:** optional GP10 button (GND, internal pull-up) +
-  console `up` command. 30 s UP timeout, 500 ms keep-alive throttle.
-- **RESET window:** 10 s from power-on (CTAP 2.3 §6.6). Rejected with
-  `0x30 NOT_ALLOWED` after the window.
-
-**Bench-verified** (10/10 checks) and **browser-verified** (webauthn.io
-register + authenticate). See `tools/BENCH_STATUS.md` for the full
-root-cause table.
+Native (host) unit tests in `tests/` — no Pico SDK, no chip required:
 
 ```sh
-# Run the FIDO2 bench (as the user who owns /dev/ttyUSB0, no sudo)
-python3 tools/fido2_bench.py run-all --no-reset --serial /dev/ttyUSB0
-
-# In-window RESET (press the Pico RESET button when prompted)
-python3 tools/fido2_bench.py post-reset --serial /dev/ttyUSB0
+cmake -S tests -B tests/build
+cmake --build tests/build
+ctest --test-dir tests/build
 ```
-
-## Running the examples
-
-1. Build: `cmake --build build/pico2 -j`
-2. Copy `build/pico2/<example>.uf2` to the Pico's `RPI-RP2` drive.
-3. Open the CP210x serial port at **115200 8N1**.
-4. Reset the Pico (power cycle is a good reset for the Trust M too).
-
-## Status
-
-- [x] Phase 0 — CMake project assembled
-- [x] Phase 1 — raw I2C probe (`i2c_probe`) — bench-verified
-- [x] Phase 2 — Pico PAL port — bench-verified
-- [x] Phase 3 — chip identity (`optiga_hello`) — bench-verified
-- [x] Phase 4 — `pico_optiga` public API — bench-verified
-- [x] Phase 5 — examples on the library (`data_objects`, `random`, `crypt`, `vault`) — bench-verified
-- [x] Phase 7 — FIDO2 (CTAP2) passkey authenticator — bench-verified (10/10) + browser-verified
 
 ## References
 
@@ -205,14 +134,12 @@ python3 tools/fido2_bench.py post-reset --serial /dev/ttyUSB0
 - [Zephyr PAL + app (reference embedded port)](https://github.com/Infineon/optiga-trust-m-zephyr)
 - [OPTIGA Trust M overview repo](https://github.com/Infineon/optiga-trust-m-overview)
 - [Raspberry Pi Pico SDK](https://github.com/raspberrypi/pico-sdk)
-- [CTAP 2.3 spec](https://fidoalliance.org/specs/fido-v2.3-ps-20260226/fido-client-to-authenticator-protocol-v2.3-ps-20260226.html)
-- [W3C WebAuthn Level 3](https://www.w3.org/TR/webauthn-3/)
 - Companion projects: [pico-atecc608](https://github.com/bnielsen1965/pico-atecc608)
   (ATECC608B variant), [pico-fido2](https://github.com/bnielsen1965/pico-fido2)
   (FIDO2 knowledge base)
 
 ## Licensing
 
-MIT — see [LICENSE](LICENSE). The Infineon OPTIGA Trust M Host Library
-(submodule) is under Infineon's own license and is not redistributed as
-part of this repo.
+MIT — see [LICENSE](LICENSE). The Infineon OPTIGA Trust M Host Library is
+fetched at build time and is under Infineon's own license; it is not
+redistributed as part of this repo.
