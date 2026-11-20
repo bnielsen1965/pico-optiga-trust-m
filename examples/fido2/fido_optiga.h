@@ -38,6 +38,14 @@ void fido_optiga_install_key_ops(fido_ctap_key_ops_t *keys);
 // the app's `provision` — the CTAP layer never calls it per-credential.
 int fido_optiga_provision(void);
 
+// Force re-key: delete the public-key cache (even if present), regenerate
+// 0xE0F3, and cache the fresh public key. Returns 0 on success. Unlike
+// fido_optiga_provision (key-once, never re-keys), this ALWAYS re-keys, so it
+// invalidates every existing credential — the caller must wipe the store. Use
+// it to recover from a stale cache (cache present but out of sync with the
+// chip's key, so signatures stop verifying). (Console: 'fido2 rekey'.)
+int fido_optiga_rekey(void);
+
 // True if the master is provisioned (0xE0F3 keyed AND the pub-key cache is a
 // well-formed 64 bytes). Read-only.
 bool fido_optiga_is_provisioned(void);

@@ -160,6 +160,33 @@ int fido_optiga_provision(void)
     return be_genkey(NULL, 0u, pub);
 }
 
+int fido_optiga_rekey(void)
+{
+    // Force re-key (the inverse of key-once): drop the public-key cache —
+    // even if it is present — regenerate 0xE0F3, and cache the fresh public
+    // key. Use it to recover from a STALE cache: the cache exists (so
+    // fido_optiga_provision is a no-op) but is out of sync with the chip, so
+    // every signature stops verifying. A re-key invalidates every existing
+    // credential (they were signed with the old key); the caller must wipe
+    // the store.
+    (void)pico_lfs_remove(FIDO_OPTIGA_PUB_PATH);   // absent file: ignore
+    uint8_t full[FIDO_OPTIGA_PUB_FULL];
+    size_t full_len = 0;
+    int rc = pico_optiga_ecc_gen_keypair(FIDO_OPTIGA_KEY_OID,
+                                         PICO_OPTIGA_CURVE_P256,
+                                         PICO_OPTIGA_USAGE_SIGN,
+                                         full, sizeof(full), &full_len);
+    if (PICO_OPTIGA_OK != rc) {
+        return -1;
+    }
+    if (full_len < FIDO_OPTIGA_PUB_FULL) {
+        return -1;
+    }
+    uint8_t pub[64];
+    memcpy(pub, full + FIDO_OPTIGA_PUB_HEADER, 64);
+    return pico_lfs_write_file(FIDO_OPTIGA_PUB_PATH, pub, 64);
+}
+
 bool fido_optiga_is_provisioned(void)
 {
     uint8_t pub[64];
